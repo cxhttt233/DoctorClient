@@ -1,0 +1,1 @@
+trigger hotfix CI after base workflow diagnostics/reporting update
