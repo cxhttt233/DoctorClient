@@ -5,6 +5,7 @@ on:
     branches: [hop-web-session-hotfix-v1]
   pull_request:
     branches: [master]
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 jobs:
