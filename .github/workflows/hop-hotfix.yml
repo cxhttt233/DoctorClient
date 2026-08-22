@@ -32,8 +32,17 @@ jobs:
           set -o pipefail
           python3 apply_hotfix.py hop 2>&1 | tee apply.log
 
-      - name: Set up Java 21
+      - name: Verify hotfix invariants
+        id: verify
         if: steps.apply.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 verify_hotfix.py hop 2>&1 | tee verify.log
+
+      - name: Set up Java 21
+        if: steps.apply.outcome == 'success' && steps.verify.outcome == 'success'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -42,7 +51,7 @@ jobs:
 
       - name: Compile and run targeted tests
         id: test
-        if: steps.apply.outcome == 'success'
+        if: steps.apply.outcome == 'success' && steps.verify.outcome == 'success'
         continue-on-error: true
         shell: bash
         run: |
@@ -52,7 +61,7 @@ jobs:
 
       - name: Package hotfix jars
         id: package
-        if: steps.apply.outcome == 'success' && steps.test.outcome == 'success'
+        if: steps.apply.outcome == 'success' && steps.verify.outcome == 'success' && steps.test.outcome == 'success'
         continue-on-error: true
         shell: bash
         run: |
@@ -81,11 +90,13 @@ jobs:
         shell: bash
         env:
           APPLY_OUTCOME: ${{ steps.apply.outcome }}
+          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
           TEST_OUTCOME: ${{ steps.test.outcome }}
           PACKAGE_OUTCOME: ${{ steps.package.outcome }}
         run: |
           mkdir -p /tmp/ci-publish
           cp apply.log /tmp/ci-publish/apply.log 2>/dev/null || true
+          cp verify.log /tmp/ci-publish/verify.log 2>/dev/null || true
           cp test.log /tmp/ci-publish/test.log 2>/dev/null || true
           cp package.log /tmp/ci-publish/package.log 2>/dev/null || true
           cp artifacts/SHA256SUMS.txt /tmp/ci-publish/SHA256SUMS.txt 2>/dev/null || true
@@ -93,6 +104,7 @@ jobs:
             echo "source_sha=${GITHUB_SHA}"
             echo "event=${GITHUB_EVENT_NAME}"
             echo "apply=${APPLY_OUTCOME:-not_run}"
+            echo "verify=${VERIFY_OUTCOME:-not_run}"
             echo "test=${TEST_OUTCOME:-not_run}"
             echo "package=${PACKAGE_OUTCOME:-not_run}"
             echo "run_id=${GITHUB_RUN_ID}"
@@ -103,7 +115,7 @@ jobs:
           cd /tmp/ci-results
           git checkout ci-results
           mkdir -p ci
-          rm -f ci/apply.log ci/test.log ci/package.log ci/SHA256SUMS.txt ci/status.txt
+          rm -f ci/apply.log ci/verify.log ci/test.log ci/package.log ci/SHA256SUMS.txt ci/status.txt
           cp /tmp/ci-publish/* ci/ 2>/dev/null || true
           git config user.name github-actions
           git config user.email github-actions@github.com
@@ -116,9 +128,11 @@ jobs:
         shell: bash
         env:
           APPLY_OUTCOME: ${{ steps.apply.outcome }}
+          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
           TEST_OUTCOME: ${{ steps.test.outcome }}
           PACKAGE_OUTCOME: ${{ steps.package.outcome }}
         run: |
           test "${APPLY_OUTCOME}" = "success"
+          test "${VERIFY_OUTCOME}" = "success"
           test "${TEST_OUTCOME}" = "success"
           test "${PACKAGE_OUTCOME}" = "success"
