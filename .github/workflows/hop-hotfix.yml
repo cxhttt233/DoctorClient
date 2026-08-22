@@ -38,14 +38,42 @@ jobs:
           cache: maven
 
       - name: Compile and run targeted tests
+        id: test
+        continue-on-error: true
         working-directory: hop
-        run: ./mvnw -B -pl ui,plugins/misc/git -am -DskipITs test
+        shell: bash
+        run: |
+          set -o pipefail
+          ./mvnw -B -pl ui,plugins/misc/git -am -DskipITs test 2>&1 | tee ../maven-test.log
+
+      - name: Upload Maven test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hop-hotfix-test-diagnostics
+          path: maven-test.log
+          if-no-files-found: warn
 
       - name: Package hotfix jars
+        id: package
+        if: steps.test.outcome == 'success'
+        continue-on-error: true
         working-directory: hop
-        run: ./mvnw -B -pl ui,plugins/misc/git -am -DskipTests package
+        shell: bash
+        run: |
+          set -o pipefail
+          ./mvnw -B -pl ui,plugins/misc/git -am -DskipTests package 2>&1 | tee ../maven-package.log
+
+      - name: Upload Maven package diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hop-hotfix-package-diagnostics
+          path: maven-package.log
+          if-no-files-found: warn
 
       - name: Collect jars
+        if: steps.package.outcome == 'success'
         run: |
           mkdir -p artifacts
           cp hop/ui/target/hop-ui-2.20.0-SNAPSHOT.jar artifacts/
@@ -54,8 +82,19 @@ jobs:
           ls -lh artifacts
 
       - name: Upload jars
+        if: steps.package.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: hop-web-session-hotfix-v1
           path: artifacts/*
           if-no-files-found: error
+
+      - name: Fail if validation failed
+        if: always()
+        shell: bash
+        env:
+          TEST_OUTCOME: ${{ steps.test.outcome }}
+          PACKAGE_OUTCOME: ${{ steps.package.outcome }}
+        run: |
+          test "$TEST_OUTCOME" = "success"
+          test "$PACKAGE_OUTCOME" = "success"
