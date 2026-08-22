@@ -3,21 +3,18 @@ from pathlib import Path
 import sys
 
 root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path('hop')
-
 checks = []
 
 def file_text(path):
     return (root / path).read_text(encoding='utf-8')
 
 def require(path, needle, label):
-    text = file_text(path)
-    if needle not in text:
+    if needle not in file_text(path):
         raise SystemExit(f'FAIL {label}: expected marker not found in {path}: {needle!r}')
     checks.append(label)
 
 def forbid(path, needle, label):
-    text = file_text(path)
-    if needle in text:
+    if needle in file_text(path):
         raise SystemExit(f'FAIL {label}: forbidden marker remains in {path}: {needle!r}')
     checks.append(label)
 
@@ -32,6 +29,9 @@ perspectives = [
 for path, cls in perspectives:
     forbid(path, f'@Getter private static {cls} instance;', f'{cls} lombok static getter removed')
     require(path, f'findPerspective({cls}.class)', f'{cls} resolves through current perspective manager')
+
+path = 'ui/src/main/java/org/apache/hop/ui/hopgui/HopGui.java'
+require(path, 'perspectiveManager.addPerspective(perspective);\n        perspective.initialize(this, mainPerspectivesComposite);', 'Perspective registered before initialize')
 
 path = 'ui/src/main/java/org/apache/hop/ui/hopgui/shared/SashFormMemory.java'
 forbid(path, 'private static final Map<String, Tracked> TRACKED', 'SashFormMemory no process-wide control map')
@@ -50,8 +50,12 @@ require(path, 'SVG_IMAGE_CACHE.remove(device)', 'SwtGc cleans only disposed Devi
 
 path = 'plugins/misc/git/src/main/java/org/apache/hop/git/GitGuiPlugin.java'
 forbid(path, 'private static UIGit git;', 'GitGuiPlugin UIGit no longer JVM-global')
-require(path, 'private UIGit git;', 'GitGuiPlugin UIGit is instance state')
-require(path, 'Map<Display, GitGuiPlugin> INSTANCES', 'GitGuiPlugin partitioned by Display')
+forbid(path, 'private UIGit git;', 'GitGuiPlugin does not isolate state per widget instance')
+require(path, 'Map<String, GitSessionState> GIT_SESSION_STATES', 'Git repository state scoped by HopGui id')
+require(path, 'private UIGit sessionGit;', 'Git session holder stores UIGit')
+require(path, 'state().sessionGit', 'Git operations resolve current HopGui state')
+require(path, 'GIT_SESSION_STATES.remove(hopGuiId)', 'Git session state cleaned on Display dispose')
+require(path, 'Map<Display, GitGuiPlugin> INSTANCES', 'GuiCallback getInstance partitioned by Display')
 
 path = 'plugins/misc/git/src/main/java/org/apache/hop/git/GitResource.java'
 forbid(path, 'private static GitResource instance;', 'GitResource JVM singleton removed')
