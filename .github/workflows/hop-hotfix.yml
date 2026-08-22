@@ -8,6 +8,11 @@ on:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
 
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
 jobs:
   build-test:
     runs-on: ubuntu-latest
@@ -88,6 +93,43 @@ jobs:
           name: hop-web-session-hotfix-v1
           path: artifacts/*
           if-no-files-found: error
+
+      - name: Report result to PR
+        if: always() && github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TEST_OUTCOME: ${{ steps.test.outcome }}
+          PACKAGE_OUTCOME: ${{ steps.package.outcome }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo '### Hop hotfix CI report'
+            echo
+            echo "- Test: ${TEST_OUTCOME:-not-run}"
+            echo "- Package: ${PACKAGE_OUTCOME:-not-run}"
+            echo "- Run: ${RUN_URL}"
+            if [ -f maven-test.log ]; then
+              echo
+              echo '<details><summary>Maven test tail</summary>'
+              echo
+              echo '```text'
+              tail -n 120 maven-test.log
+              echo '```'
+              echo '</details>'
+            fi
+            if [ -f maven-package.log ]; then
+              echo
+              echo '<details><summary>Maven package tail</summary>'
+              echo
+              echo '```text'
+              tail -n 80 maven-package.log
+              echo '```'
+              echo '</details>'
+            fi
+          } > ci-report.md
+          gh pr comment "$PR_URL" --body-file ci-report.md
 
       - name: Fail if validation failed
         if: always()
