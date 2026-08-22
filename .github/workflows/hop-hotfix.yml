@@ -42,43 +42,37 @@ jobs:
           java-version: '21'
           cache: maven
 
-      - name: Compile and run targeted tests
+      - name: Compile and install hotfix modules
+        id: build
+        continue-on-error: true
+        working-directory: hop
+        shell: bash
+        run: |
+          set -o pipefail
+          ./mvnw -B -pl ui,plugins/misc/git -am -DskipTests install 2>&1 | tee ../maven-build.log
+
+      - name: Run UI and Git module tests
         id: test
+        if: steps.build.outcome == 'success'
         continue-on-error: true
         working-directory: hop
         shell: bash
         run: |
           set -o pipefail
-          ./mvnw -B -pl ui,plugins/misc/git -am -DskipITs test 2>&1 | tee ../maven-test.log
+          ./mvnw -B -pl ui,plugins/misc/git -DskipITs test 2>&1 | tee ../maven-test.log
 
-      - name: Upload Maven test diagnostics
+      - name: Upload Maven diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: hop-hotfix-test-diagnostics
-          path: maven-test.log
-          if-no-files-found: warn
-
-      - name: Package hotfix jars
-        id: package
-        if: steps.test.outcome == 'success'
-        continue-on-error: true
-        working-directory: hop
-        shell: bash
-        run: |
-          set -o pipefail
-          ./mvnw -B -pl ui,plugins/misc/git -am -DskipTests package 2>&1 | tee ../maven-package.log
-
-      - name: Upload Maven package diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: hop-hotfix-package-diagnostics
-          path: maven-package.log
+          name: hop-hotfix-diagnostics
+          path: |
+            maven-build.log
+            maven-test.log
           if-no-files-found: warn
 
       - name: Collect jars
-        if: steps.package.outcome == 'success'
+        if: steps.build.outcome == 'success' && steps.test.outcome == 'success'
         run: |
           mkdir -p artifacts
           cp hop/ui/target/hop-ui-2.20.0-SNAPSHOT.jar artifacts/
@@ -87,7 +81,7 @@ jobs:
           ls -lh artifacts
 
       - name: Upload jars
-        if: steps.package.outcome == 'success'
+        if: steps.build.outcome == 'success' && steps.test.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: hop-web-session-hotfix-v1
@@ -99,35 +93,28 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
           TEST_OUTCOME: ${{ steps.test.outcome }}
-          PACKAGE_OUTCOME: ${{ steps.package.outcome }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           {
             echo '### Hop hotfix CI report'
             echo
-            echo "- Test: ${TEST_OUTCOME:-not-run}"
-            echo "- Package: ${PACKAGE_OUTCOME:-not-run}"
+            echo "- Build: ${BUILD_OUTCOME:-not-run}"
+            echo "- UI/Git tests: ${TEST_OUTCOME:-not-run}"
             echo "- Run: ${RUN_URL}"
-            if [ -f maven-test.log ]; then
-              echo
-              echo '<details><summary>Maven test tail</summary>'
-              echo
-              echo '```text'
-              tail -n 120 maven-test.log
-              echo '```'
-              echo '</details>'
-            fi
-            if [ -f maven-package.log ]; then
-              echo
-              echo '<details><summary>Maven package tail</summary>'
-              echo
-              echo '```text'
-              tail -n 80 maven-package.log
-              echo '```'
-              echo '</details>'
-            fi
+            for f in maven-build.log maven-test.log; do
+              if [ -f "$f" ]; then
+                echo
+                echo "<details><summary>${f} tail</summary>"
+                echo
+                echo '```text'
+                tail -n 120 "$f"
+                echo '```'
+                echo '</details>'
+              fi
+            done
           } > ci-report.md
           gh pr comment "$PR_URL" --body-file ci-report.md
 
@@ -135,8 +122,8 @@ jobs:
         if: always()
         shell: bash
         env:
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
           TEST_OUTCOME: ${{ steps.test.outcome }}
-          PACKAGE_OUTCOME: ${{ steps.package.outcome }}
         run: |
+          test "$BUILD_OUTCOME" = "success"
           test "$TEST_OUTCOME" = "success"
-          test "$PACKAGE_OUTCOME" = "success"
