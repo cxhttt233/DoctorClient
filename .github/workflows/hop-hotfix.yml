@@ -1,9 +1,15 @@
 name: Hop Web session hotfix
 
 on:
+  push:
+    branches: [hop-web-session-hotfix-v1]
   pull_request:
     branches: [master]
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build-test:
@@ -11,32 +17,125 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+
       - name: Checkout Apache Hop
         run: |
           git clone --filter=blob:none https://github.com/apache/hop.git hop
           cd hop
           git checkout 2a2ba3f78c5d7b315c956967ac859fa430802058
+
       - name: Apply hotfix
-        run: python3 apply_hotfix.py hop
+        id: apply
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            python3 apply_hotfix.py hop
+            python3 apply_hotfix_phase2.py hop
+          } 2>&1 | tee apply.log
+
+      - name: Verify hotfix invariants
+        id: verify
+        if: steps.apply.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 verify_hotfix.py hop 2>&1 | tee verify.log
+
       - name: Set up Java 21
+        if: steps.apply.outcome == 'success' && steps.verify.outcome == 'success'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
           cache: maven
+
       - name: Compile and run targeted tests
-        working-directory: hop
-        run: ./mvnw -B -pl ui,plugins/misc/git -am -DskipITs test
+        id: test
+        if: steps.apply.outcome == 'success' && steps.verify.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          cd hop
+          ./mvnw -B -pl ui,plugins/misc/git -am -DskipITs test 2>&1 | tee ../test.log
+
       - name: Package hotfix jars
-        working-directory: hop
-        run: ./mvnw -B -pl ui,plugins/misc/git -am -DskipTests package
+        id: package
+        if: steps.apply.outcome == 'success' && steps.verify.outcome == 'success' && steps.test.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          cd hop
+          ./mvnw -B -pl ui,plugins/misc/git -am -DskipTests package 2>&1 | tee ../package.log
+
       - name: Collect jars
+        if: steps.package.outcome == 'success'
         run: |
           mkdir -p artifacts
           cp hop/ui/target/hop-ui-2.20.0-SNAPSHOT.jar artifacts/
           cp hop/plugins/misc/git/target/hop-misc-git-2.20.0-SNAPSHOT.jar artifacts/
-      - uses: actions/upload-artifact@v4
+          sha256sum artifacts/*.jar > artifacts/SHA256SUMS.txt
+
+      - name: Upload jars
+        if: steps.package.outcome == 'success'
+        uses: actions/upload-artifact@v4
         with:
           name: hop-web-session-hotfix-v1
-          path: artifacts/*.jar
+          path: artifacts/*
           if-no-files-found: error
+
+      - name: Publish CI result for automated review
+        if: always()
+        shell: bash
+        env:
+          APPLY_OUTCOME: ${{ steps.apply.outcome }}
+          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
+          TEST_OUTCOME: ${{ steps.test.outcome }}
+          PACKAGE_OUTCOME: ${{ steps.package.outcome }}
+        run: |
+          mkdir -p /tmp/ci-publish
+          cp apply.log /tmp/ci-publish/apply.log 2>/dev/null || true
+          cp verify.log /tmp/ci-publish/verify.log 2>/dev/null || true
+          cp test.log /tmp/ci-publish/test.log 2>/dev/null || true
+          cp package.log /tmp/ci-publish/package.log 2>/dev/null || true
+          cp artifacts/SHA256SUMS.txt /tmp/ci-publish/SHA256SUMS.txt 2>/dev/null || true
+          {
+            echo "source_sha=${GITHUB_SHA}"
+            echo "event=${GITHUB_EVENT_NAME}"
+            echo "apply=${APPLY_OUTCOME:-not_run}"
+            echo "verify=${VERIFY_OUTCOME:-not_run}"
+            echo "test=${TEST_OUTCOME:-not_run}"
+            echo "package=${PACKAGE_OUTCOME:-not_run}"
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "run_attempt=${GITHUB_RUN_ATTEMPT}"
+            date -u '+finished_utc=%Y-%m-%dT%H:%M:%SZ'
+          } > /tmp/ci-publish/status.txt
+          git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" /tmp/ci-results
+          cd /tmp/ci-results
+          git checkout ci-results
+          mkdir -p ci
+          rm -f ci/apply.log ci/verify.log ci/test.log ci/package.log ci/SHA256SUMS.txt ci/status.txt
+          cp /tmp/ci-publish/* ci/ 2>/dev/null || true
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add ci
+          git commit -m "ci: publish hotfix result for ${GITHUB_SHA}" || true
+          git push origin ci-results
+
+      - name: Fail workflow when validation failed
+        if: always()
+        shell: bash
+        env:
+          APPLY_OUTCOME: ${{ steps.apply.outcome }}
+          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
+          TEST_OUTCOME: ${{ steps.test.outcome }}
+          PACKAGE_OUTCOME: ${{ steps.package.outcome }}
+        run: |
+          test "${APPLY_OUTCOME}" = "success"
+          test "${VERIFY_OUTCOME}" = "success"
+          test "${TEST_OUTCOME}" = "success"
+          test "${PACKAGE_OUTCOME}" = "success"
