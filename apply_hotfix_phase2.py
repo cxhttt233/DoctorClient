@@ -66,8 +66,8 @@ def replace_java_identifier(text, identifier, replacement):
     return ''.join(out)
 
 
-# 1) Register each perspective in the current HopGui manager before initialize().
-# This lets any getInstance() invoked from initialize()/GUI callbacks resolve the current session object.
+# Register each perspective before initialize() so getInstance() is session-resolvable even from
+# initialize-time callbacks.
 rel = 'ui/src/main/java/org/apache/hop/ui/hopgui/HopGui.java'
 text = read(rel)
 old = '''        final IHopPerspective perspective = perspectiveClass.getConstructor().newInstance();
@@ -80,9 +80,8 @@ text = replace_once(text, old, new, 'HopGui perspective registration order')
 write(rel, text)
 
 
-# 2) GitGuiPlugin: BaseGuiWidgets may create multiple plugin objects inside one HopGui session.
-# The old static UIGit shared state across all sessions. Phase1 made it instance-local, which would
-# break same-session toolbar/menu instances. Replace it with a HopGui-id scoped state holder.
+# BaseGuiWidgets can create multiple GitGuiPlugin objects inside one HopGui session. The repository
+# state therefore must be shared within that session, but never across Hop Web sessions.
 rel = 'plugins/misc/git/src/main/java/org/apache/hop/git/GitGuiPlugin.java'
 text = read(rel)
 old = '''  private static final Map<Display, GitGuiPlugin> INSTANCES = new ConcurrentHashMap<>();
@@ -98,12 +97,7 @@ new = '''  private static final Map<Display, GitGuiPlugin> INSTANCES = new Concu
   private static final Set<String> GIT_SESSION_CLEANUPS = ConcurrentHashMap.newKeySet();
 
   private static final class GitSessionState {
-    private UIGit git;
-  }
-
-  private static String currentHopGuiId() {
-    HopGui hopGui = HopGui.getInstance();
-    return hopGui == null ? "__fallback__" : hopGui.getId();
+    private UIGit sessionGit;
   }
 
   private static GitSessionState state() {
@@ -118,9 +112,9 @@ new = '''  private static final Map<Display, GitGuiPlugin> INSTANCES = new Concu
             event -> {
               GitSessionState removed = GIT_SESSION_STATES.remove(hopGuiId);
               GIT_SESSION_CLEANUPS.remove(hopGuiId);
-              if (removed != null && removed.git != null) {
+              if (removed != null && removed.sessionGit != null) {
                 try {
-                  removed.git.closeRepo();
+                  removed.sessionGit.closeRepo();
                 } catch (Exception e) {
                   LogChannel.UI.logError("Error closing Git repository at session shutdown", e);
                 }
@@ -132,19 +126,17 @@ new = '''  private static final Map<Display, GitGuiPlugin> INSTANCES = new Concu
   }'''
 text = replace_once(text, old, new, 'GitGuiPlugin session state holder')
 
-# Convert every former field access/assignment to the current session state. Imports/comments/strings
-# are protected by the lexical scanner. There are no method parameters/local variables named `git`
-# in this class at this revision.
+# Rewrite all former accesses to the old field `git` to the HopGui-scoped state. The newly inserted
+# holder deliberately names its member `sessionGit`, so this lexical pass cannot rewrite itself.
 class_start = text.index('public class GitGuiPlugin')
 prefix = text[:class_start]
 body = text[class_start:]
-body = replace_java_identifier(body, 'git', 'state().git')
+body = replace_java_identifier(body, 'git', 'state().sessionGit')
 text = prefix + body
 
-# Phase1 callback used an explicit sessionPlugin field access. Normalize it after lexical conversion.
 old_callback = '''  public void addRootChangedListener() {
     GitGuiPlugin sessionPlugin = getInstance();
-    sessionPlugin.state().git = null;
+    sessionPlugin.state().sessionGit = null;
     ExplorerPerspective explorerPerspective = ExplorerPerspective.getInstance();
     if (explorerPerspective == null) {
       return;
@@ -160,14 +152,14 @@ old_callback = '''  public void addRootChangedListener() {
     sessionPlugin.enableButtons();
   }'''
 new_callback = '''  public void addRootChangedListener() {
-    state().git = null;
+    state().sessionGit = null;
     ExplorerPerspective explorerPerspective = ExplorerPerspective.getInstance();
     if (explorerPerspective == null) {
       return;
     }
 
-    // The callback object is already Display-scoped by getInstance(); the Git repository itself is
-    // shared by all GUI plugin instances belonging to this HopGui session through state().
+    // GuiCallbackMethod invokes getInstance(), which is Display scoped. Other toolbar/menu plugin
+    // instances in the same HopGui share only the repository state through state().
     //
     explorerPerspective.getRootChangedListeners().add(this);
     explorerPerspective.getFilePaintListeners().add(this);
@@ -177,16 +169,6 @@ new_callback = '''  public void addRootChangedListener() {
     enableButtons();
   }'''
 text = replace_once(text, old_callback, new_callback, 'GitGuiPlugin callback normalization')
-
-# Remove an unused helper introduced above if the compiler/style checker flags it; state() is the
-# single authority for choosing the HopGui scope, so no callers need a separate id method.
-unused = '''  private static String currentHopGuiId() {
-    HopGui hopGui = HopGui.getInstance();
-    return hopGui == null ? "__fallback__" : hopGui.getId();
-  }
-
-'''
-text = text.replace(unused, '', 1)
 write(rel, text)
 
 print('Hotfix phase2 completed')
