@@ -30,7 +30,10 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          python3 apply_hotfix.py hop 2>&1 | tee apply.log
+          {
+            python3 apply_hotfix.py hop
+            python3 apply_hotfix_phase2.py hop
+          } 2>&1 | tee apply.log
 
       - name: Verify hotfix invariants
         id: verify
