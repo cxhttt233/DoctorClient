@@ -1,0 +1,170 @@
+name: Hop Web loading splash 20260820
+
+on:
+  push:
+    branches: [hop-web-loading-20260820]
+    paths:
+      - '.github/workflows/hop-web-loading-20260820.yml'
+      - 'apply_loading_splash.py'
+      - 'apply_hotfix.py'
+      - 'apply_hotfix_pre.py'
+      - 'apply_hotfix_phase2.py'
+      - 'verify_hotfix.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-loading-jar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout exact Aug 20 Hop baseline
+        run: |
+          git clone --filter=blob:none https://github.com/apache/hop.git hop
+          cd hop
+          git checkout 362140499c9afbff3e6ae3afede89a1796eaf972
+          test "$(git rev-parse HEAD)" = "362140499c9afbff3e6ae3afede89a1796eaf972"
+          grep -q 'org.apache.hop.core.security.HopSecurityContext' ui/src/main/java/org/apache/hop/ui/hopgui/HopGui.java
+          test ! -f core/src/main/java/org/apache/hop/core/undo/XmlSnapshotUndo.java
+
+      - name: Apply the already validated session and Git hotfix source patches
+        run: |
+          python3 apply_hotfix_pre.py hop
+          python3 apply_hotfix.py hop
+          python3 apply_hotfix_phase2.py hop
+          python3 verify_hotfix.py hop
+
+      - name: Apply loading splash patch only to RAP module
+        run: |
+          python3 apply_loading_splash.py hop
+          grep -q 'WebClient.BODY_HTML, getLoadingSplash(false)' hop/rap/src/main/java/org/apache/hop/ui/hopgui/HopWeb.java
+          grep -q 'WebClient.BODY_HTML, getLoadingSplash(true)' hop/rap/src/main/java/org/apache/hop/ui/hopgui/HopWeb.java
+          grep -q 'hideLoadingSplash();' hop/rap/src/main/java/org/apache/hop/ui/hopgui/HopWebEntryPoint.java
+          grep -q 'hop-loading-splash' hop/rap/src/main/java/org/apache/hop/ui/hopgui/HopWeb.java
+
+      - name: Assert loading patch did not touch validated hotfix modules
+        run: |
+          git -C hop diff --name-only 362140499c9afbff3e6ae3afede89a1796eaf972 | sort > /tmp/all-changed.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          changed = set(Path('/tmp/all-changed.txt').read_text().splitlines())
+          rap = {
+              'rap/src/main/java/org/apache/hop/ui/hopgui/HopWeb.java',
+              'rap/src/main/java/org/apache/hop/ui/hopgui/HopWebEntryPoint.java',
+          }
+          if not rap.issubset(changed):
+              raise SystemExit(f'RAP loading files missing from diff: {rap - changed}')
+          print('RAP loading changes present; existing hotfix changes remain in their original modules')
+          PY
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Compile validated hotfix plus RAP loading module
+        working-directory: hop
+        run: ./mvnw -B -pl ui,plugins/misc/git,rap -am -DskipTests install
+
+      - name: Run UI, Git and RAP tests
+        working-directory: hop
+        run: ./mvnw -B -pl ui,plugins/misc/git,rap -DskipITs test
+
+      - name: Binary compatibility guards
+        working-directory: hop
+        run: |
+          test -f ui/target/hop-ui-2.20.0-SNAPSHOT.jar
+          test -f plugins/misc/git/target/hop-misc-git-2.20.0-SNAPSHOT.jar
+          test -f rap/target/hop-ui-rap-2.20.0-SNAPSHOT.jar
+          javap -classpath ui/target/hop-ui-2.20.0-SNAPSHOT.jar org.apache.hop.ui.hopgui.HopGui > /tmp/HopGui.javap
+          grep -Fq 'public void setSecurityContext(org.apache.hop.core.security.HopSecurityContext);' /tmp/HopGui.javap
+          grep -Fq 'public org.apache.hop.core.security.HopSecurityContext getSecurityContext();' /tmp/HopGui.javap
+          if unzip -p ui/target/hop-ui-2.20.0-SNAPSHOT.jar | strings | grep -q 'XmlSnapshotUndo'; then
+            echo 'ERROR: hop-ui references incompatible XmlSnapshotUndo API' >&2
+            exit 1
+          fi
+          unzip -p rap/target/hop-ui-rap-2.20.0-SNAPSHOT.jar org/apache/hop/ui/hopgui/HopWeb.class | strings | grep -Fq 'hop-loading-splash'
+          unzip -p rap/target/hop-ui-rap-2.20.0-SNAPSHOT.jar org/apache/hop/ui/hopgui/HopWebEntryPoint.class | strings | grep -Fq 'hideLoadingSplash'
+          echo 'Security ABI + loading splash binary guards: PASS'
+
+      - name: Build complete Hop Web runtime
+        working-directory: hop
+        run: |
+          printf '\n!lib-p2/\n!lib-p2/**\n' >> .dockerignore
+          docker build --progress=plain \
+            -f docker/unified.Dockerfile \
+            --target web \
+            --build-arg HOP_BUILD_FROM_SOURCE=local \
+            --build-arg BUILDER_TYPE=full \
+            --build-arg SKIP_FAT_JAR=true \
+            -t hop-web-loading-20260820 .
+
+      - name: Runtime smoke, splash proof and dual-session check
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          docker run -d --name hop-web-loading-20260820 -p 18080:8080 \
+            -e HOP_LOG_LEVEL=Basic hop-web-loading-20260820
+          cleanup() {
+            docker logs hop-web-loading-20260820 > hop-web-loading-20260820.log 2>&1 || true
+            docker rm -f hop-web-loading-20260820 >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          ready=0
+          for i in $(seq 1 90); do
+            code=$(curl -sS --max-time 10 -o /tmp/ready.html -w '%{http_code}' http://127.0.0.1:18080/ui || true)
+            if [ "$code" = "200" ]; then ready=1; break; fi
+            if [ "$code" = "500" ]; then
+              docker logs hop-web-loading-20260820 || true
+              exit 1
+            fi
+            sleep 2
+          done
+          test "$ready" -eq 1
+          grep -Fq 'hop-loading-splash' /tmp/ready.html
+          grep -Fq 'Loading workspace, please wait' /tmp/ready.html
+          echo 'Initial /ui HTML contains loading splash: PASS'
+
+          rm -f /tmp/a.cookies /tmp/b.cookies
+          curl -fsSL --max-time 20 -c /tmp/a.cookies -b /tmp/a.cookies http://127.0.0.1:18080/ui -o /tmp/a.html
+          curl -fsSL --max-time 20 -c /tmp/b.cookies -b /tmp/b.cookies http://127.0.0.1:18080/ui -o /tmp/b.html
+          sid_a=$(awk '$6 == "JSESSIONID" {print $7}' /tmp/a.cookies | tail -1)
+          sid_b=$(awk '$6 == "JSESSIONID" {print $7}' /tmp/b.cookies | tail -1)
+          test -n "$sid_a" && test -n "$sid_b" && test "$sid_a" != "$sid_b"
+          for i in $(seq 1 10); do
+            curl -fsSL --max-time 20 -b /tmp/a.cookies http://127.0.0.1:18080/ui -o /tmp/a-$i.html &
+            curl -fsSL --max-time 20 -b /tmp/b.cookies http://127.0.0.1:18080/ui -o /tmp/b-$i.html &
+          done
+          wait
+          docker logs hop-web-loading-20260820 > hop-web-loading-20260820.log 2>&1
+          ! grep -Eiq 'NoSuchMethodError|NoSuchFieldError|LinkageError|Invalid thread access|InvalidThreadAccess|UISession.{0,80}(invalid|disposed)|Widget is disposed|NoClassDefFoundError|ClassNotFoundException' hop-web-loading-20260820.log
+          echo 'Dual-session + fatal-log runtime smoke: PASS'
+
+      - name: Collect RAP-only artifact
+        if: success()
+        run: |
+          mkdir -p artifacts
+          cp hop/rap/target/hop-ui-rap-2.20.0-SNAPSHOT.jar artifacts/
+          cp hop-web-loading-20260820.log artifacts/ 2>/dev/null || true
+          sha256sum artifacts/hop-ui-rap-2.20.0-SNAPSHOT.jar > artifacts/SHA256SUMS.txt
+          cat > artifacts/BASELINE.txt <<'EOF'
+          source_commit=362140499c9afbff3e6ae3afede89a1796eaf972
+          loading_scope=rap-only
+          expected_installed_final_hotfix_ui_sha256=fbd7a631a790473d1804ba90566593c4942ba8d681f1902bdcc37c07b3a7b729
+          expected_installed_final_hotfix_git_sha256=ec08417e2ccab58db04696ef0c1116437e4b2b92abd7476692e8dec60e8607c0
+          note=Do not replace hop-ui or hop-misc-git when installing this loading patch.
+          EOF
+
+      - name: Upload RAP loading artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hop-web-loading-20260820-rap-only
+          path: artifacts/*
+          if-no-files-found: error
