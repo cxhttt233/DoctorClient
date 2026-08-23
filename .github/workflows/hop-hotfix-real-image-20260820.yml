@@ -12,7 +12,7 @@ on:
       - 'verify_hotfix.py'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   exact-image-regression:
@@ -21,18 +21,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Record exact-image run start
+        continue-on-error: true
+        run: |
+          printf 'status=running\nstage=pull-exact-image\nrun_id=%s\nrun_number=%s\ncommit=%s\ntime=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > exact-image-status-20260820.txt
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add exact-image-status-20260820.txt
+          git commit -m "ci: exact 0820 image run ${GITHUB_RUN_NUMBER} started" || true
+          git push origin HEAD:hop-web-session-hotfix-20260820 || true
+
       - name: Pull exact published 20260820 image and extract original jars
         shell: bash
         run: |
           set -Eeuo pipefail
           IMAGE='apache/hop-web:2.20.0-SNAPSHOT-20260820'
           docker pull "$IMAGE"
-          docker image inspect "$IMAGE" > image-inspect.json
+          mkdir -p exact-image
+          docker image inspect "$IMAGE" > exact-image/image-inspect.json
           cid=$(docker create "$IMAGE")
           trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
-          mkdir -p exact-image
-          ui_path=$(docker export "$cid" | tar -tf - | grep -E '/hop-ui-2\.20\.0-SNAPSHOT\.jar$' | head -1)
-          git_path=$(docker export "$cid" | tar -tf - | grep -E '/hop-misc-git-2\.20\.0-SNAPSHOT\.jar$' | head -1)
+          docker export -o /tmp/hop-0820-rootfs.tar "$cid"
+          ui_path=$(tar -tf /tmp/hop-0820-rootfs.tar | grep -E '(^|/)hop-ui-2\.20\.0-SNAPSHOT\.jar$' | head -1)
+          git_path=$(tar -tf /tmp/hop-0820-rootfs.tar | grep -E '(^|/)hop-misc-git-2\.20\.0-SNAPSHOT\.jar$' | head -1)
           test -n "$ui_path" && test -n "$git_path"
           docker cp "$cid:/${ui_path#./}" exact-image/hop-ui-2.20.0-SNAPSHOT.jar
           docker cp "$cid:/${git_path#./}" exact-image/hop-misc-git-2.20.0-SNAPSHOT.jar
@@ -95,7 +106,6 @@ jobs:
           javap -classpath "$NEW_UI" org.apache.hop.ui.hopgui.HopGui > exact-image/HopGui-hotfix.javap.txt
           grep -F 'setSecurityContext(org.apache.hop.core.security.HopSecurityContext)' exact-image/HopGui-hotfix.javap.txt
           grep -F 'getSecurityContext()' exact-image/HopGui-hotfix.javap.txt
-          # Catch the exact production failure class and common linkage regressions before runtime.
           jar tf "$NEW_UI" | grep -q '^org/apache/hop/ui/hopgui/HopGui.class$'
           jar tf "$NEW_GIT" | grep -q '^org/apache/hop/git/GitGuiPlugin.class$'
           sha256sum "$NEW_UI" "$NEW_GIT" | tee exact-image/hotfix-sha256.txt
@@ -159,3 +169,16 @@ jobs:
           name: hop-web-hotfix-exact-20260820-diagnostics
           path: exact-image/*
           if-no-files-found: warn
+
+      - name: Publish exact-image final status
+        if: always()
+        continue-on-error: true
+        env:
+          RESULT: ${{ job.status }}
+        run: |
+          printf 'status=%s\nstage=finished-%s\nrun_id=%s\nrun_number=%s\ncommit=%s\ntime=%s\n' "$RESULT" "$RESULT" "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > exact-image-status-20260820.txt
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add exact-image-status-20260820.txt
+          git commit -m "ci: exact 0820 image run ${GITHUB_RUN_NUMBER} ${RESULT}" || exit 0
+          git push origin HEAD:hop-web-session-hotfix-20260820 || true
