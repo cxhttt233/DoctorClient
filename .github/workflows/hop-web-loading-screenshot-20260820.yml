@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   capture-loading:
@@ -16,6 +16,17 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+
+      - name: Publish screenshot run marker
+        continue-on-error: true
+        run: |
+          printf 'status=running\nrun_id=%s\nrun_number=%s\nsource_sha=%s\ntime=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > screenshot-status-20260820.txt
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add screenshot-status-20260820.txt
+          git commit -m "ci: screenshot run ${GITHUB_RUN_NUMBER} started" || exit 0
+          git pull --rebase origin hop-web-loading-20260820 || true
+          git push origin HEAD:hop-web-loading-20260820
 
       - name: Checkout exact Aug 20 Hop baseline
         run: |
@@ -128,3 +139,17 @@ jobs:
           name: hop-web-loading-actual-screenshots-20260820
           path: screenshot-artifacts/*
           if-no-files-found: error
+
+      - name: Publish final screenshot status
+        if: always()
+        continue-on-error: true
+        env:
+          RESULT: ${{ job.status }}
+        run: |
+          printf 'status=%s\nrun_id=%s\nrun_number=%s\nsource_sha=%s\ntime=%s\n' "$RESULT" "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > screenshot-status-20260820.txt
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add screenshot-status-20260820.txt
+          git commit -m "ci: screenshot run ${GITHUB_RUN_NUMBER} ${RESULT}" || exit 0
+          git pull --rebase origin hop-web-loading-20260820 || true
+          git push origin HEAD:hop-web-loading-20260820
