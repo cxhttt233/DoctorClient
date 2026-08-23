@@ -1,6 +1,6 @@
 status=running
-stage=source-patch-verified
-run_id=32635355492
-run_number=16
-commit=919c2f47b20fb5cbefc45a941859d4b7748445dd
-time=2026-08-23T11:01:28Z
+stage=checkout-baseline
+run_id=32636574605
+run_number=17
+commit=b39280cf603753643934ed9e8ecf5520ea0d4626
+time=2026-08-23T11:27:09Z
