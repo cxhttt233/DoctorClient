@@ -16,7 +16,7 @@ permissions:
 jobs:
   build-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -61,7 +61,83 @@ jobs:
           set -o pipefail
           ./mvnw -B -pl ui,plugins/misc/git -DskipITs test 2>&1 | tee ../maven-test.log
 
-      - name: Upload Maven diagnostics
+      - name: Build and smoke-test Hop Web runtime
+        id: smoke
+        if: steps.build.outcome == 'success' && steps.test.outcome == 'success'
+        continue-on-error: true
+        working-directory: hop
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          docker build --progress=plain \
+            -f docker/unified.Dockerfile \
+            --target web \
+            --build-arg HOP_BUILD_FROM_SOURCE=local \
+            --build-arg BUILDER_TYPE=full \
+            --build-arg SKIP_FAT_JAR=true \
+            -t hop-web-hotfix-smoke . 2>&1 | tee ../docker-build.log
+
+          docker run -d --name hop-web-hotfix-smoke -p 18080:8080 \
+            -e HOP_LOG_LEVEL=Basic \
+            hop-web-hotfix-smoke
+
+          cleanup() {
+            docker logs hop-web-hotfix-smoke > ../hop-web-smoke.log 2>&1 || true
+            docker rm -f hop-web-hotfix-smoke >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          ready=0
+          for i in $(seq 1 90); do
+            if curl -fsSL --max-time 10 http://127.0.0.1:18080/ui -o /tmp/hop-ready.html; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo 'Hop Web did not become ready on /ui' >&2
+            exit 1
+          fi
+
+          rm -f ../session-a.cookies ../session-b.cookies
+          curl -fsSL --max-time 20 -c ../session-a.cookies -b ../session-a.cookies \
+            http://127.0.0.1:18080/ui -o ../session-a.html
+          curl -fsSL --max-time 20 -c ../session-b.cookies -b ../session-b.cookies \
+            http://127.0.0.1:18080/ui -o ../session-b.html
+
+          sid_a=$(awk '$6 == "JSESSIONID" {print $7}' ../session-a.cookies | tail -1)
+          sid_b=$(awk '$6 == "JSESSIONID" {print $7}' ../session-b.cookies | tail -1)
+          echo "Session A JSESSIONID: ${sid_a:-missing}"
+          echo "Session B JSESSIONID: ${sid_b:-missing}"
+          test -n "$sid_a"
+          test -n "$sid_b"
+          test "$sid_a" != "$sid_b"
+
+          for i in $(seq 1 12); do
+            curl -fsSL --max-time 20 -b ../session-a.cookies \
+              http://127.0.0.1:18080/ui -o /tmp/session-a-${i}.html &
+            curl -fsSL --max-time 20 -b ../session-b.cookies \
+              http://127.0.0.1:18080/ui -o /tmp/session-b-${i}.html &
+          done
+          wait
+          sleep 3
+
+          docker logs hop-web-hotfix-smoke > ../hop-web-smoke.log 2>&1
+          if grep -Eiq \
+            'Invalid thread access|InvalidThreadAccess|UISession.{0,80}(invalid|disposed)|Widget is disposed|SWTException.{0,80}thread|ERROR.{0,120}(UISession|thread access)' \
+            ../hop-web-smoke.log; then
+            echo 'Runtime smoke test found a session/thread/UI error:' >&2
+            grep -Ein \
+              'Invalid thread access|InvalidThreadAccess|UISession.{0,80}(invalid|disposed)|Widget is disposed|SWTException.{0,80}thread|ERROR.{0,120}(UISession|thread access)' \
+              ../hop-web-smoke.log | tail -50 >&2 || true
+            exit 1
+          fi
+
+          echo 'Hop Web runtime smoke test passed with two distinct concurrent sessions.'
+
+      - name: Upload Maven and smoke diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -69,10 +145,16 @@ jobs:
           path: |
             maven-build.log
             maven-test.log
+            docker-build.log
+            hop-web-smoke.log
+            session-a.cookies
+            session-b.cookies
+            session-a.html
+            session-b.html
           if-no-files-found: warn
 
       - name: Collect jars
-        if: steps.build.outcome == 'success' && steps.test.outcome == 'success'
+        if: steps.build.outcome == 'success' && steps.test.outcome == 'success' && steps.smoke.outcome == 'success'
         run: |
           mkdir -p artifacts
           cp hop/ui/target/hop-ui-2.20.0-SNAPSHOT.jar artifacts/
@@ -81,7 +163,7 @@ jobs:
           ls -lh artifacts
 
       - name: Upload jars
-        if: steps.build.outcome == 'success' && steps.test.outcome == 'success'
+        if: steps.build.outcome == 'success' && steps.test.outcome == 'success' && steps.smoke.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: hop-web-session-hotfix-v1
@@ -95,6 +177,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BUILD_OUTCOME: ${{ steps.build.outcome }}
           TEST_OUTCOME: ${{ steps.test.outcome }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -103,8 +186,9 @@ jobs:
             echo
             echo "- Build: ${BUILD_OUTCOME:-not-run}"
             echo "- UI/Git tests: ${TEST_OUTCOME:-not-run}"
+            echo "- Runtime dual-session smoke: ${SMOKE_OUTCOME:-not-run}"
             echo "- Run: ${RUN_URL}"
-            for f in maven-build.log maven-test.log; do
+            for f in maven-build.log maven-test.log docker-build.log hop-web-smoke.log; do
               if [ -f "$f" ]; then
                 echo
                 echo "<details><summary>${f} tail</summary>"
@@ -124,6 +208,8 @@ jobs:
         env:
           BUILD_OUTCOME: ${{ steps.build.outcome }}
           TEST_OUTCOME: ${{ steps.test.outcome }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
         run: |
           test "$BUILD_OUTCOME" = "success"
           test "$TEST_OUTCOME" = "success"
+          test "$SMOKE_OUTCOME" = "success"
