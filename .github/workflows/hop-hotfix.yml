@@ -20,6 +20,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Announce run to PR harness
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment 1 --repo "${{ github.repository }}" --body "### Hop hotfix runtime smoke started\n\n- Event: ${{ github.event_name }}\n- Commit: ${{ github.sha }}\n- Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
       - name: Checkout Apache Hop
         run: |
           git clone --filter=blob:none https://github.com/apache/hop.git hop
