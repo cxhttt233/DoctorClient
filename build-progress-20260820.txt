@@ -1,6 +1,6 @@
-status=running
-stage=docker-build-passed
+status=success
+stage=finished-success
 run_id=32632659040
 run_number=8
 commit=388c0b7ad6a19457c8cbc9a69034f80174d019ed
-time=2026-08-23T10:23:09Z
+time=2026-08-23T10:23:26Z

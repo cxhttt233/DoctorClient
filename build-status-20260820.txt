@@ -1,6 +1,6 @@
-status=failure
-run_id=32630930753
-run_number=4
-commit=948cd08a65c5cfa66233a45abe5db618c3ced93d
+status=success
+run_id=32632659040
+run_number=8
+commit=388c0b7ad6a19457c8cbc9a69034f80174d019ed
 artifact=hop-web-session-hotfix-20260820
 baseline=fe9619b0ae7cec95444cca0516bd8d6aada6cda0
