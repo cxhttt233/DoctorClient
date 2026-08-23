@@ -1,6 +1,6 @@
-status=running
+status=success
 run_id=32652607380
 run_number=1
 source_branch=hop-web-loading-20260820
 source_sha=dce1247471af3b6b4d4df21b680cbad35f58b0ef
-time=2026-08-23T16:44:29Z
+time=2026-08-23T16:59:40Z
