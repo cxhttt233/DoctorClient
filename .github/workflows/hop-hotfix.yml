@@ -20,24 +20,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Announce run to PR harness
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh pr comment 1 --repo "${{ github.repository }}" --body "### Hop hotfix runtime smoke started\n\n- Event: ${{ github.event_name }}\n- Commit: ${{ github.sha }}\n- Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
       - name: Checkout Apache Hop
         run: |
           git clone --filter=blob:none https://github.com/apache/hop.git hop
           cd hop
           git checkout 2a2ba3f78c5d7b315c956967ac859fa430802058
 
-      - name: Apply and verify hotfix
+      - name: Apply hotfix
         run: |
           python3 apply_hotfix_pre.py hop
           python3 apply_hotfix.py hop
           python3 apply_hotfix_phase2.py hop
-          python3 verify_hotfix.py hop
+
+      - name: Verify hotfix invariants
+        run: python3 verify_hotfix.py hop
 
       - name: Set up Java 21
         uses: actions/setup-java@v4
@@ -46,81 +42,107 @@ jobs:
           java-version: '21'
           cache: maven
 
-      - name: Compile hotfix modules
+      - name: Compile and install hotfix modules
         id: build
         continue-on-error: true
         working-directory: hop
+        shell: bash
         run: |
           set -o pipefail
           ./mvnw -B -pl ui,plugins/misc/git -am -DskipTests install 2>&1 | tee ../maven-build.log
 
-      - name: Run UI and Git tests
+      - name: Run UI and Git module tests
         id: test
         if: steps.build.outcome == 'success'
         continue-on-error: true
         working-directory: hop
+        shell: bash
         run: |
           set -o pipefail
           ./mvnw -B -pl ui,plugins/misc/git -DskipITs test 2>&1 | tee ../maven-test.log
 
-      - name: Runtime dual-session smoke
+      - name: Build and smoke-test Hop Web runtime
         id: smoke
         if: steps.build.outcome == 'success' && steps.test.outcome == 'success'
         continue-on-error: true
         working-directory: hop
+        shell: bash
         run: |
           set -Eeuo pipefail
-          # The pinned Hop commit's .dockerignore omits lib-p2 even though the
-          # default Maven base reactor includes it. Re-include it only for this
-          # CI build context; the upstream source tree itself is not modified.
+
+          # The pinned Hop commit includes lib-p2 in the default Maven reactor,
+          # but its .dockerignore omits that directory from local Docker builds.
+          # Re-include it only in this ephemeral CI checkout.
           printf '\n!lib-p2/\n!lib-p2/**\n' >> .dockerignore
-          docker build --progress=plain -f docker/unified.Dockerfile --target web \
+
+          docker build --progress=plain \
+            -f docker/unified.Dockerfile \
+            --target web \
             --build-arg HOP_BUILD_FROM_SOURCE=local \
             --build-arg BUILDER_TYPE=full \
             --build-arg SKIP_FAT_JAR=true \
             -t hop-web-hotfix-smoke . 2>&1 | tee ../docker-build.log
-          docker run -d --name hop-web-hotfix-smoke -p 18080:8080 -e HOP_LOG_LEVEL=Basic hop-web-hotfix-smoke
+
+          docker run -d --name hop-web-hotfix-smoke -p 18080:8080 \
+            -e HOP_LOG_LEVEL=Basic \
+            hop-web-hotfix-smoke
+
           cleanup() {
             docker logs hop-web-hotfix-smoke > ../hop-web-smoke.log 2>&1 || true
             docker rm -f hop-web-hotfix-smoke >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
+
           ready=0
           for i in $(seq 1 90); do
-            if curl -fsSL --max-time 10 http://127.0.0.1:18080/ui -o /tmp/hop-ready.html; then ready=1; break; fi
+            if curl -fsSL --max-time 10 http://127.0.0.1:18080/ui -o /tmp/hop-ready.html; then
+              ready=1
+              break
+            fi
             sleep 2
           done
-          test "$ready" = 1
+          if [ "$ready" -ne 1 ]; then
+            echo 'Hop Web did not become ready on /ui' >&2
+            exit 1
+          fi
+
           rm -f ../session-a.cookies ../session-b.cookies
-          curl -fsSL --max-time 20 -c ../session-a.cookies -b ../session-a.cookies http://127.0.0.1:18080/ui -o ../session-a.html
-          curl -fsSL --max-time 20 -c ../session-b.cookies -b ../session-b.cookies http://127.0.0.1:18080/ui -o ../session-b.html
+          curl -fsSL --max-time 20 -c ../session-a.cookies -b ../session-a.cookies \
+            http://127.0.0.1:18080/ui -o ../session-a.html
+          curl -fsSL --max-time 20 -c ../session-b.cookies -b ../session-b.cookies \
+            http://127.0.0.1:18080/ui -o ../session-b.html
+
           sid_a=$(awk '$6 == "JSESSIONID" {print $7}' ../session-a.cookies | tail -1)
           sid_b=$(awk '$6 == "JSESSIONID" {print $7}' ../session-b.cookies | tail -1)
           echo "Session A JSESSIONID: ${sid_a:-missing}"
           echo "Session B JSESSIONID: ${sid_b:-missing}"
-          test -n "$sid_a" && test -n "$sid_b" && test "$sid_a" != "$sid_b"
+          test -n "$sid_a"
+          test -n "$sid_b"
+          test "$sid_a" != "$sid_b"
+
           for i in $(seq 1 12); do
-            curl -fsSL --max-time 20 -b ../session-a.cookies http://127.0.0.1:18080/ui -o /tmp/session-a-${i}.html &
-            curl -fsSL --max-time 20 -b ../session-b.cookies http://127.0.0.1:18080/ui -o /tmp/session-b-${i}.html &
+            curl -fsSL --max-time 20 -b ../session-a.cookies \
+              http://127.0.0.1:18080/ui -o /tmp/session-a-${i}.html &
+            curl -fsSL --max-time 20 -b ../session-b.cookies \
+              http://127.0.0.1:18080/ui -o /tmp/session-b-${i}.html &
           done
           wait
           sleep 3
+
           docker logs hop-web-hotfix-smoke > ../hop-web-smoke.log 2>&1
-          if grep -Eiq 'Invalid thread access|InvalidThreadAccess|UISession.{0,80}(invalid|disposed)|Widget is disposed|SWTException.{0,80}thread|ERROR.{0,120}(UISession|thread access)' ../hop-web-smoke.log; then
-            grep -Ein 'Invalid thread access|InvalidThreadAccess|UISession.{0,80}(invalid|disposed)|Widget is disposed|SWTException.{0,80}thread|ERROR.{0,120}(UISession|thread access)' ../hop-web-smoke.log | tail -50 || true
+          if grep -Eiq \
+            'Invalid thread access|InvalidThreadAccess|UISession.{0,80}(invalid|disposed)|Widget is disposed|SWTException.{0,80}thread|ERROR.{0,120}(UISession|thread access)' \
+            ../hop-web-smoke.log; then
+            echo 'Runtime smoke test found a session/thread/UI error:' >&2
+            grep -Ein \
+              'Invalid thread access|InvalidThreadAccess|UISession.{0,80}(invalid|disposed)|Widget is disposed|SWTException.{0,80}thread|ERROR.{0,120}(UISession|thread access)' \
+              ../hop-web-smoke.log | tail -50 >&2 || true
             exit 1
           fi
+
           echo 'Hop Web runtime smoke test passed with two distinct concurrent sessions.'
 
-      - name: Collect jars
-        if: steps.build.outcome == 'success' && steps.test.outcome == 'success' && steps.smoke.outcome == 'success'
-        run: |
-          mkdir -p artifacts
-          cp hop/ui/target/hop-ui-2.20.0-SNAPSHOT.jar artifacts/
-          cp hop/plugins/misc/git/target/hop-misc-git-2.20.0-SNAPSHOT.jar artifacts/
-          sha256sum artifacts/*.jar > artifacts/SHA256SUMS.txt
-
-      - name: Upload diagnostics
+      - name: Upload Maven and smoke diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -136,6 +158,15 @@ jobs:
             session-b.html
           if-no-files-found: warn
 
+      - name: Collect jars
+        if: steps.build.outcome == 'success' && steps.test.outcome == 'success' && steps.smoke.outcome == 'success'
+        run: |
+          mkdir -p artifacts
+          cp hop/ui/target/hop-ui-2.20.0-SNAPSHOT.jar artifacts/
+          cp hop/plugins/misc/git/target/hop-misc-git-2.20.0-SNAPSHOT.jar artifacts/
+          sha256sum artifacts/*.jar > artifacts/SHA256SUMS.txt
+          ls -lh artifacts
+
       - name: Upload jars
         if: steps.build.outcome == 'success' && steps.test.outcome == 'success' && steps.smoke.outcome == 'success'
         uses: actions/upload-artifact@v4
@@ -144,20 +175,20 @@ jobs:
           path: artifacts/*
           if-no-files-found: error
 
-      - name: Report result to PR harness
-        if: always()
+      - name: Report result to PR
+        if: always() && github.event_name == 'pull_request'
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           BUILD_OUTCOME: ${{ steps.build.outcome }}
           TEST_OUTCOME: ${{ steps.test.outcome }}
           SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           {
             echo '### Hop hotfix CI report'
             echo
-            echo "- Event: ${{ github.event_name }}"
-            echo "- Commit: ${{ github.sha }}"
             echo "- Build: ${BUILD_OUTCOME:-not-run}"
             echo "- UI/Git tests: ${TEST_OUTCOME:-not-run}"
             echo "- Runtime dual-session smoke: ${SMOKE_OUTCOME:-not-run}"
@@ -168,21 +199,22 @@ jobs:
                 echo "<details><summary>${f} tail</summary>"
                 echo
                 echo '```text'
-                tail -n 100 "$f"
+                tail -n 120 "$f"
                 echo '```'
                 echo '</details>'
               fi
             done
           } > ci-report.md
-          gh pr comment 1 --repo "${{ github.repository }}" --body-file ci-report.md
+          gh pr comment "$PR_URL" --body-file ci-report.md
 
       - name: Fail if validation failed
         if: always()
+        shell: bash
         env:
           BUILD_OUTCOME: ${{ steps.build.outcome }}
           TEST_OUTCOME: ${{ steps.test.outcome }}
           SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
         run: |
-          test "$BUILD_OUTCOME" = success
-          test "$TEST_OUTCOME" = success
-          test "$SMOKE_OUTCOME" = success
+          test "$BUILD_OUTCOME" = "success"
+          test "$TEST_OUTCOME" = "success"
+          test "$SMOKE_OUTCOME" = "success"
