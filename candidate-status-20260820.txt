@@ -1,7 +1,7 @@
-status=running
-stage=baseline-verified
+status=success
+stage=finished-success
 run_id=32635402310
 run_number=5
 source_commit=051b1599204922aa7d614363bfa2c25ed469230e
 candidate_commit=362140499c9afbff3e6ae3afede89a1796eaf972
-time=2026-08-23T11:02:28Z
+time=2026-08-23T11:21:11Z
