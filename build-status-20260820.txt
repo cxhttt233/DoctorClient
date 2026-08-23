@@ -1,0 +1,6 @@
+status=failure
+run_id=32628507120
+run_number=2
+commit=54a95badd2fe69b9d21c7476eaab826642ad103c
+artifact=hop-web-session-hotfix-20260820
+baseline=fe9619b0ae7cec95444cca0516bd8d6aada6cda0
