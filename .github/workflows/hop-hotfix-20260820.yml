@@ -3,10 +3,12 @@ name: Hop Web hotfix 20260820 baseline
 on:
   push:
     branches: [hop-web-session-hotfix-20260820]
+    paths-ignore:
+      - build-status-20260820.txt
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-test:
@@ -81,10 +83,12 @@ jobs:
             docker rm -f hop-web-hotfix-20260820-smoke >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
+          ready=0
           for i in $(seq 1 90); do
-            if curl -fsSL --max-time 10 http://127.0.0.1:18080/ui -o /tmp/ready.html; then break; fi
+            if curl -fsSL --max-time 10 http://127.0.0.1:18080/ui -o /tmp/ready.html; then ready=1; break; fi
             sleep 2
           done
+          test "$ready" -eq 1
           rm -f /tmp/a.cookies /tmp/b.cookies
           curl -fsSL --max-time 20 -c /tmp/a.cookies -b /tmp/a.cookies http://127.0.0.1:18080/ui -o /tmp/a.html
           curl -fsSL --max-time 20 -c /tmp/b.cookies -b /tmp/b.cookies http://127.0.0.1:18080/ui -o /tmp/b.html
@@ -121,3 +125,18 @@ jobs:
           name: hop-web-session-hotfix-20260820-diagnostics
           path: hop-web-20260820-smoke.log
           if-no-files-found: warn
+
+      - name: Publish build status marker
+        if: always()
+        env:
+          BUILD_STATUS: ${{ job.status }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          printf 'status=%s\nrun_id=%s\nrun_number=%s\ncommit=%s\nartifact=hop-web-session-hotfix-20260820\nbaseline=fe9619b0ae7cec95444cca0516bd8d6aada6cda0\n' \
+            "$BUILD_STATUS" "$RUN_ID" "$RUN_NUMBER" "$GITHUB_SHA" > build-status-20260820.txt
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add build-status-20260820.txt
+          git commit -m "ci: record 20260820 hotfix build ${RUN_NUMBER} ${BUILD_STATUS}" || exit 0
+          git push origin HEAD:hop-web-session-hotfix-20260820
