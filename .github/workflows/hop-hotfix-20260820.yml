@@ -4,7 +4,9 @@ on:
   push:
     branches: [hop-web-session-hotfix-20260820]
     paths-ignore:
+      - build-progress-20260820.txt
       - build-status-20260820.txt
+      - notified-20260820.txt
   workflow_dispatch:
 
 permissions:
@@ -17,12 +19,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Record build start
+        run: |
+          printf 'status=running\nstage=checkout-baseline\nrun_id=%s\nrun_number=%s\ncommit=%s\ntime=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > build-progress-20260820.txt
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add build-progress-20260820.txt
+          git commit -m "ci: build ${GITHUB_RUN_NUMBER} started" || true
+          git push origin HEAD:hop-web-session-hotfix-20260820
+
       - name: Checkout Apache Hop image baseline
         run: |
           git clone --filter=blob:none https://github.com/apache/hop.git hop
           cd hop
           git checkout fe9619b0ae7cec95444cca0516bd8d6aada6cda0
-          test "$(grep -m1 '<version>' pom.xml | sed -E 's/.*<version>([^<]+).*/\1/')" = "2.20.0-SNAPSHOT"
+          grep -q '<artifactId>hop</artifactId>' pom.xml
+          grep -q '<version>2.20.0-SNAPSHOT</version>' pom.xml
           test ! -f engine/src/main/java/org/apache/hop/core/undo/XmlSnapshotUndo.java
 
       - name: Apply hotfix
@@ -34,6 +46,13 @@ jobs:
       - name: Verify hotfix invariants
         run: python3 verify_hotfix.py hop
 
+      - name: Record source patch verified
+        run: |
+          printf 'status=running\nstage=source-patch-verified\nrun_id=%s\nrun_number=%s\ncommit=%s\ntime=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > build-progress-20260820.txt
+          git add build-progress-20260820.txt
+          git commit -m "ci: build ${GITHUB_RUN_NUMBER} source patch verified" || true
+          git push origin HEAD:hop-web-session-hotfix-20260820
+
       - name: Set up Java 21
         uses: actions/setup-java@v4
         with:
@@ -44,6 +63,13 @@ jobs:
       - name: Compile and install hotfix modules
         working-directory: hop
         run: ./mvnw -B -pl ui,plugins/misc/git -am -DskipTests install
+
+      - name: Record compile passed
+        run: |
+          printf 'status=running\nstage=compile-passed\nrun_id=%s\nrun_number=%s\ncommit=%s\ntime=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > build-progress-20260820.txt
+          git add build-progress-20260820.txt
+          git commit -m "ci: build ${GITHUB_RUN_NUMBER} compile passed" || true
+          git push origin HEAD:hop-web-session-hotfix-20260820
 
       - name: Run UI and Git module tests
         working-directory: hop
@@ -60,6 +86,13 @@ jobs:
           fi
           echo 'No post-baseline XmlSnapshotUndo reference: PASS'
 
+      - name: Record tests and binary guard passed
+        run: |
+          printf 'status=running\nstage=tests-binary-guard-passed\nrun_id=%s\nrun_number=%s\ncommit=%s\ntime=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > build-progress-20260820.txt
+          git add build-progress-20260820.txt
+          git commit -m "ci: build ${GITHUB_RUN_NUMBER} tests and binary guard passed" || true
+          git push origin HEAD:hop-web-session-hotfix-20260820
+
       - name: Build Hop Web runtime
         working-directory: hop
         run: |
@@ -71,6 +104,13 @@ jobs:
             --build-arg BUILDER_TYPE=full \
             --build-arg SKIP_FAT_JAR=true \
             -t hop-web-hotfix-20260820-smoke .
+
+      - name: Record Docker build passed
+        run: |
+          printf 'status=running\nstage=docker-build-passed\nrun_id=%s\nrun_number=%s\ncommit=%s\ntime=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > build-progress-20260820.txt
+          git add build-progress-20260820.txt
+          git commit -m "ci: build ${GITHUB_RUN_NUMBER} docker build passed" || true
+          git push origin HEAD:hop-web-session-hotfix-20260820
 
       - name: Dual-session runtime smoke
         shell: bash
@@ -135,8 +175,9 @@ jobs:
         run: |
           printf 'status=%s\nrun_id=%s\nrun_number=%s\ncommit=%s\nartifact=hop-web-session-hotfix-20260820\nbaseline=fe9619b0ae7cec95444cca0516bd8d6aada6cda0\n' \
             "$BUILD_STATUS" "$RUN_ID" "$RUN_NUMBER" "$GITHUB_SHA" > build-status-20260820.txt
+          printf 'status=%s\nstage=finished-%s\nrun_id=%s\nrun_number=%s\ncommit=%s\ntime=%s\n' "$BUILD_STATUS" "$BUILD_STATUS" "$RUN_ID" "$RUN_NUMBER" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > build-progress-20260820.txt
           git config user.name github-actions
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add build-status-20260820.txt
+          git add build-status-20260820.txt build-progress-20260820.txt
           git commit -m "ci: record 20260820 hotfix build ${RUN_NUMBER} ${BUILD_STATUS}" || exit 0
           git push origin HEAD:hop-web-session-hotfix-20260820
