@@ -1,6 +1,6 @@
 status=running
-stage=tests-binary-guard-passed
+stage=docker-build-passed
 run_id=32632659040
 run_number=8
 commit=388c0b7ad6a19457c8cbc9a69034f80174d019ed
-time=2026-08-23T10:06:17Z
+time=2026-08-23T10:23:09Z
