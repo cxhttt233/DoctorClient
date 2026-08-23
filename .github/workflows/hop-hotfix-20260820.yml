@@ -1,0 +1,123 @@
+name: Hop Web hotfix 20260820 baseline
+
+on:
+  push:
+    branches: [hop-web-session-hotfix-20260820]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout Apache Hop image baseline
+        run: |
+          git clone --filter=blob:none https://github.com/apache/hop.git hop
+          cd hop
+          git checkout fe9619b0ae7cec95444cca0516bd8d6aada6cda0
+          test "$(grep -m1 '<version>' pom.xml | sed -E 's/.*<version>([^<]+).*/\1/')" = "2.20.0-SNAPSHOT"
+          test ! -f engine/src/main/java/org/apache/hop/core/undo/XmlSnapshotUndo.java
+
+      - name: Apply hotfix
+        run: |
+          python3 apply_hotfix_pre.py hop
+          python3 apply_hotfix.py hop
+          python3 apply_hotfix_phase2.py hop
+
+      - name: Verify hotfix invariants
+        run: python3 verify_hotfix.py hop
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Compile and install hotfix modules
+        working-directory: hop
+        run: ./mvnw -B -pl ui,plugins/misc/git -am -DskipTests install
+
+      - name: Run UI and Git module tests
+        working-directory: hop
+        run: ./mvnw -B -pl ui,plugins/misc/git -DskipITs test
+
+      - name: Binary baseline guard
+        working-directory: hop
+        run: |
+          test -f ui/target/hop-ui-2.20.0-SNAPSHOT.jar
+          test -f plugins/misc/git/target/hop-misc-git-2.20.0-SNAPSHOT.jar
+          if unzip -p ui/target/hop-ui-2.20.0-SNAPSHOT.jar | strings | grep -q 'XmlSnapshotUndo'; then
+            echo 'ERROR: hop-ui references post-baseline XmlSnapshotUndo API' >&2
+            exit 1
+          fi
+          echo 'No post-baseline XmlSnapshotUndo reference: PASS'
+
+      - name: Build Hop Web runtime
+        working-directory: hop
+        run: |
+          printf '\n!lib-p2/\n!lib-p2/**\n' >> .dockerignore
+          docker build --progress=plain \
+            -f docker/unified.Dockerfile \
+            --target web \
+            --build-arg HOP_BUILD_FROM_SOURCE=local \
+            --build-arg BUILDER_TYPE=full \
+            --build-arg SKIP_FAT_JAR=true \
+            -t hop-web-hotfix-20260820-smoke .
+
+      - name: Dual-session runtime smoke
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          docker run -d --name hop-web-hotfix-20260820-smoke -p 18080:8080 \
+            -e HOP_LOG_LEVEL=Basic hop-web-hotfix-20260820-smoke
+          cleanup() {
+            docker logs hop-web-hotfix-20260820-smoke > hop-web-20260820-smoke.log 2>&1 || true
+            docker rm -f hop-web-hotfix-20260820-smoke >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          for i in $(seq 1 90); do
+            if curl -fsSL --max-time 10 http://127.0.0.1:18080/ui -o /tmp/ready.html; then break; fi
+            sleep 2
+          done
+          rm -f /tmp/a.cookies /tmp/b.cookies
+          curl -fsSL --max-time 20 -c /tmp/a.cookies -b /tmp/a.cookies http://127.0.0.1:18080/ui -o /tmp/a.html
+          curl -fsSL --max-time 20 -c /tmp/b.cookies -b /tmp/b.cookies http://127.0.0.1:18080/ui -o /tmp/b.html
+          sid_a=$(awk '$6 == "JSESSIONID" {print $7}' /tmp/a.cookies | tail -1)
+          sid_b=$(awk '$6 == "JSESSIONID" {print $7}' /tmp/b.cookies | tail -1)
+          test -n "$sid_a" && test -n "$sid_b" && test "$sid_a" != "$sid_b"
+          for i in $(seq 1 12); do
+            curl -fsSL --max-time 20 -b /tmp/a.cookies http://127.0.0.1:18080/ui -o /tmp/a-$i.html &
+            curl -fsSL --max-time 20 -b /tmp/b.cookies http://127.0.0.1:18080/ui -o /tmp/b-$i.html &
+          done
+          wait
+          docker logs hop-web-hotfix-20260820-smoke > hop-web-20260820-smoke.log 2>&1
+          ! grep -Eiq 'Invalid thread access|InvalidThreadAccess|UISession.{0,80}(invalid|disposed)|Widget is disposed|SWTException.{0,80}thread|NoClassDefFoundError|ClassNotFoundException' hop-web-20260820-smoke.log
+
+      - name: Collect compatible jars
+        run: |
+          mkdir -p artifacts
+          cp hop/ui/target/hop-ui-2.20.0-SNAPSHOT.jar artifacts/
+          cp hop/plugins/misc/git/target/hop-misc-git-2.20.0-SNAPSHOT.jar artifacts/
+          sha256sum artifacts/*.jar > artifacts/SHA256SUMS.txt
+          printf 'baseline_commit=fe9619b0ae7cec95444cca0516bd8d6aada6cda0\nimage_id=sha256:b2bc221efb68383a2816af67d83fb303a47ab34494257827a19004f0cec706d0\noriginal_hop_core_sha256=640357ca8e549b7ad5c96c70e6c543e90038738b1edcac1bcc571ae5407e0e87\noriginal_hop_ui_sha256=d7b388746c442f96830d4b49a94f89b40bce13c5c8ff0f9a952562238bb84726\noriginal_git_sha256=e76ed8ee89d344435372c3cf1b3ba669874100f5ff17987074eb5ea22e477ba0\n' > artifacts/BASELINE.txt
+
+      - name: Upload compatible jars
+        uses: actions/upload-artifact@v4
+        with:
+          name: hop-web-session-hotfix-20260820
+          path: artifacts/*
+          if-no-files-found: error
+
+      - name: Upload smoke log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hop-web-session-hotfix-20260820-diagnostics
+          path: hop-web-20260820-smoke.log
+          if-no-files-found: warn
