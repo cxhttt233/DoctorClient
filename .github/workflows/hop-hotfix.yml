@@ -70,6 +70,11 @@ jobs:
         run: |
           set -Eeuo pipefail
 
+          # The pinned Hop commit includes lib-p2 in the default Maven reactor,
+          # but its .dockerignore omits that directory from local Docker builds.
+          # Re-include it only in this ephemeral CI checkout.
+          printf '\n!lib-p2/\n!lib-p2/**\n' >> .dockerignore
+
           docker build --progress=plain \
             -f docker/unified.Dockerfile \
             --target web \
