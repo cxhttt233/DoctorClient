@@ -11,12 +11,24 @@ on:
       - 'verify_hotfix.py'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-jars:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+
+      - name: Record jar build start
+        run: |
+          printf 'status=running\nrun_id=%s\nrun_number=%s\ncommit=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" > jar-build-progress-20260820.txt
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add jar-build-progress-20260820.txt
+          git commit -m "ci: record 20260820 jar build ${GITHUB_RUN_NUMBER} start [skip ci]" || true
+          git push origin HEAD:hop-web-session-hotfix-20260820
 
       - name: Checkout Apache Hop 20260820 baseline
         run: |
@@ -70,3 +82,15 @@ jobs:
           name: hop-web-session-hotfix-20260820-jars
           path: artifacts/*
           if-no-files-found: error
+
+      - name: Record jar build result
+        if: always()
+        env:
+          RESULT: ${{ job.status }}
+        run: |
+          printf 'status=%s\nrun_id=%s\nrun_number=%s\ncommit=%s\n' "$RESULT" "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" > jar-build-progress-20260820.txt
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add jar-build-progress-20260820.txt
+          git commit -m "ci: record 20260820 jar build ${GITHUB_RUN_NUMBER} ${RESULT} [skip ci]" || true
+          git push origin HEAD:hop-web-session-hotfix-20260820
