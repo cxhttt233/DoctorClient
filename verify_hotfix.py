@@ -103,3 +103,5 @@ for graph_path, variable in [
     )
 
 print(f'PASS: {len(checks)} hotfix isolation/regression invariants verified')
+
+# Trigger marker: validate against the post-security 2026-08-20 source candidate.
