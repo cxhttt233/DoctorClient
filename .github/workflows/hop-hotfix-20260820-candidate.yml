@@ -1,0 +1,138 @@
+name: Hop Web hotfix 20260820 post-security candidate
+
+on:
+  push:
+    branches: [hop-web-session-hotfix-20260820]
+    paths:
+      - '.github/workflows/hop-hotfix-20260820-candidate.yml'
+      - 'apply_hotfix.py'
+      - 'apply_hotfix_pre.py'
+      - 'apply_hotfix_phase2.py'
+      - 'verify_hotfix.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout Aug 20 post-security Hop baseline
+        run: |
+          git clone --filter=blob:none https://github.com/apache/hop.git hop
+          cd hop
+          git checkout 362140499c9afbff3e6ae3afede89a1796eaf972
+          test "$(git rev-parse HEAD)" = "362140499c9afbff3e6ae3afede89a1796eaf972"
+          grep -q 'org.apache.hop.core.security.HopSecurityContext' ui/src/main/java/org/apache/hop/ui/hopgui/HopGui.java
+          grep -q '@Setter private HopSecurityContext securityContext;' ui/src/main/java/org/apache/hop/ui/hopgui/HopGui.java
+          grep -q 'setSecurityContext(HopSecurity.getContext())' ui/src/main/java/org/apache/hop/ui/hopgui/HopGui.java
+          test ! -f core/src/main/java/org/apache/hop/core/undo/XmlSnapshotUndo.java
+
+      - name: Apply hotfix
+        run: |
+          python3 apply_hotfix_pre.py hop
+          python3 apply_hotfix.py hop
+          python3 apply_hotfix_phase2.py hop
+
+      - name: Verify hotfix isolation and security source compatibility
+        run: |
+          python3 verify_hotfix.py hop
+          grep -q 'org.apache.hop.core.security.HopSecurityContext' hop/ui/src/main/java/org/apache/hop/ui/hopgui/HopGui.java
+          grep -q '@Setter private HopSecurityContext securityContext;' hop/ui/src/main/java/org/apache/hop/ui/hopgui/HopGui.java
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Compile target modules
+        working-directory: hop
+        run: ./mvnw -B -pl ui,plugins/misc/git -am -DskipTests install
+
+      - name: Run UI and Git module tests
+        working-directory: hop
+        run: ./mvnw -B -pl ui,plugins/misc/git -DskipITs test
+
+      - name: Binary API guard for real 0820 Hop Web security
+        working-directory: hop
+        run: |
+          test -f ui/target/hop-ui-2.20.0-SNAPSHOT.jar
+          test -f plugins/misc/git/target/hop-misc-git-2.20.0-SNAPSHOT.jar
+          javap -classpath ui/target/hop-ui-2.20.0-SNAPSHOT.jar org.apache.hop.ui.hopgui.HopGui > /tmp/HopGui.javap
+          grep -Fq 'public void setSecurityContext(org.apache.hop.core.security.HopSecurityContext);' /tmp/HopGui.javap
+          grep -Fq 'public org.apache.hop.core.security.HopSecurityContext getSecurityContext();' /tmp/HopGui.javap
+          if unzip -p ui/target/hop-ui-2.20.0-SNAPSHOT.jar | strings | grep -q 'XmlSnapshotUndo'; then
+            echo 'ERROR: hop-ui references Aug 21+ XmlSnapshotUndo API' >&2
+            exit 1
+          fi
+          echo 'HopSecurityContext ABI present and Aug 21+ undo API absent: PASS'
+
+      - name: Build Hop Web runtime from Aug 20 candidate
+        working-directory: hop
+        run: |
+          printf '\n!lib-p2/\n!lib-p2/**\n' >> .dockerignore
+          docker build --progress=plain \
+            -f docker/unified.Dockerfile \
+            --target web \
+            --build-arg HOP_BUILD_FROM_SOURCE=local \
+            --build-arg BUILDER_TYPE=full \
+            --build-arg SKIP_FAT_JAR=true \
+            -t hop-web-hotfix-20260820-postsecurity .
+
+      - name: Runtime smoke including security entry point
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          docker run -d --name hop-web-hotfix-20260820-postsecurity -p 18080:8080 \
+            -e HOP_LOG_LEVEL=Basic hop-web-hotfix-20260820-postsecurity
+          cleanup() {
+            docker logs hop-web-hotfix-20260820-postsecurity > hop-web-20260820-postsecurity.log 2>&1 || true
+            docker rm -f hop-web-hotfix-20260820-postsecurity >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          ready=0
+          for i in $(seq 1 90); do
+            code=$(curl -sS --max-time 10 -o /tmp/ready.html -w '%{http_code}' http://127.0.0.1:18080/ui || true)
+            if [ "$code" = "200" ]; then ready=1; break; fi
+            if [ "$code" = "500" ]; then
+              docker logs hop-web-hotfix-20260820-postsecurity || true
+              exit 1
+            fi
+            sleep 2
+          done
+          test "$ready" -eq 1
+          rm -f /tmp/a.cookies /tmp/b.cookies
+          curl -fsSL --max-time 20 -c /tmp/a.cookies -b /tmp/a.cookies http://127.0.0.1:18080/ui -o /tmp/a.html
+          curl -fsSL --max-time 20 -c /tmp/b.cookies -b /tmp/b.cookies http://127.0.0.1:18080/ui -o /tmp/b.html
+          sid_a=$(awk '$6 == "JSESSIONID" {print $7}' /tmp/a.cookies | tail -1)
+          sid_b=$(awk '$6 == "JSESSIONID" {print $7}' /tmp/b.cookies | tail -1)
+          test -n "$sid_a" && test -n "$sid_b" && test "$sid_a" != "$sid_b"
+          for i in $(seq 1 12); do
+            curl -fsSL --max-time 20 -b /tmp/a.cookies http://127.0.0.1:18080/ui -o /tmp/a-$i.html &
+            curl -fsSL --max-time 20 -b /tmp/b.cookies http://127.0.0.1:18080/ui -o /tmp/b-$i.html &
+          done
+          wait
+          docker logs hop-web-hotfix-20260820-postsecurity > hop-web-20260820-postsecurity.log 2>&1
+          ! grep -Eiq 'NoSuchMethodError|NoSuchFieldError|LinkageError|Invalid thread access|InvalidThreadAccess|UISession.{0,80}(invalid|disposed)|Widget is disposed|NoClassDefFoundError|ClassNotFoundException' hop-web-20260820-postsecurity.log
+
+      - name: Collect candidate jars and validation metadata
+        run: |
+          mkdir -p artifacts
+          cp hop/ui/target/hop-ui-2.20.0-SNAPSHOT.jar artifacts/
+          cp hop/plugins/misc/git/target/hop-misc-git-2.20.0-SNAPSHOT.jar artifacts/
+          (cd artifacts && sha256sum hop-ui-2.20.0-SNAPSHOT.jar hop-misc-git-2.20.0-SNAPSHOT.jar > SHA256SUMS.txt)
+          printf 'candidate_commit=362140499c9afbff3e6ae3afede89a1796eaf972\nsecurity_merge=fe391e751de35e3792485c7ad6342793b6e41483\nsecurity_abi_guard=setSecurityContext(HopSecurityContext)\nold_invalid_baseline=fe9619b0ae7cec95444cca0516bd8d6aada6cda0\n' > artifacts/BASELINE.txt
+          cp hop-web-20260820-postsecurity.log artifacts/
+
+      - name: Upload candidate artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hop-web-session-hotfix-20260820-postsecurity-candidate
+          path: artifacts/*
+          if-no-files-found: error
