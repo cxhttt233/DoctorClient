@@ -1,7 +1,7 @@
-status=success
-stage=finished-success
-run_id=32635402310
-run_number=5
-source_commit=051b1599204922aa7d614363bfa2c25ed469230e
+status=running
+stage=baseline-verified
+run_id=32636574634
+run_number=6
+source_commit=b39280cf603753643934ed9e8ecf5520ea0d4626
 candidate_commit=362140499c9afbff3e6ae3afede89a1796eaf972
-time=2026-08-23T11:21:11Z
+time=2026-08-23T11:27:24Z
