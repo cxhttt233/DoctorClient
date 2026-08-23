@@ -32,6 +32,17 @@ jobs:
           grep -q 'setSecurityContext(HopSecurity.getContext())' ui/src/main/java/org/apache/hop/ui/hopgui/HopGui.java
           test ! -f core/src/main/java/org/apache/hop/core/undo/XmlSnapshotUndo.java
 
+      - name: Publish candidate run id
+        continue-on-error: true
+        run: |
+          printf 'status=running\nstage=baseline-verified\nrun_id=%s\nrun_number=%s\nsource_commit=%s\ncandidate_commit=362140499c9afbff3e6ae3afede89a1796eaf972\ntime=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > candidate-status-20260820.txt
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add candidate-status-20260820.txt
+          git commit -m "ci: candidate 20260820 ${GITHUB_RUN_NUMBER} started" || exit 0
+          git pull --rebase origin hop-web-session-hotfix-20260820 || true
+          git push origin HEAD:hop-web-session-hotfix-20260820
+
       - name: Apply hotfix
         run: |
           python3 apply_hotfix_pre.py hop
@@ -143,7 +154,7 @@ jobs:
         env:
           RESULT: ${{ job.status }}
         run: |
-          printf 'status=%s\nrun_id=%s\nrun_number=%s\nsource_commit=%s\ncandidate_commit=362140499c9afbff3e6ae3afede89a1796eaf972\ntime=%s\n' "$RESULT" "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > candidate-status-20260820.txt
+          printf 'status=%s\nstage=finished-%s\nrun_id=%s\nrun_number=%s\nsource_commit=%s\ncandidate_commit=362140499c9afbff3e6ae3afede89a1796eaf972\ntime=%s\n' "$RESULT" "$RESULT" "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > candidate-status-20260820.txt
           git config user.name github-actions
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add candidate-status-20260820.txt
