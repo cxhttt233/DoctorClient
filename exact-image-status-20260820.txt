@@ -1,6 +1,6 @@
-status=running
-stage=pull-exact-image
+status=failure
+stage=finished-failure
 run_id=32635011427
 run_number=2
 commit=91f3ee7ef36e482f9505fd3a1da92c1ca2c7e642
-time=2026-08-23T10:54:01Z
+time=2026-08-23T10:54:04Z
