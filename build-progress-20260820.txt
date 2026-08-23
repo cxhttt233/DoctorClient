@@ -1,6 +1,6 @@
 status=running
-stage=compile-passed
+stage=tests-binary-guard-passed
 run_id=32631148918
 run_number=5
 commit=44d8c46286d2f2482386ff3b5c2095a05fb7c81d
-time=2026-08-23T09:32:27Z
+time=2026-08-23T09:33:06Z
