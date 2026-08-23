@@ -80,6 +80,22 @@ text = replace_once(text, old, new, 'HopGui perspective registration order')
 write(rel, text)
 
 
+# Keep the original public no-argument DrillDown API as a compatibility shim. The old implementation
+# cleared JVM-global execution state, which is unsafe in Hop Web. Legacy callers can still link, but
+# the shim intentionally performs no cross-session cleanup; current graph callers use the scoped
+# overload with their previous root log-channel id.
+rel = 'ui/src/main/java/org/apache/hop/ui/hopgui/file/shared/DrillDownGuiPlugin.java'
+text = read(rel)
+old = '''  public static void cleanupOnRunStart(String previousRootLogChannelId) {'''
+new = '''  public static void cleanupOnRunStart() {
+    cleanupOnRunStart(null);
+  }
+
+  public static void cleanupOnRunStart(String previousRootLogChannelId) {'''
+text = replace_once(text, old, new, 'DrillDown public ABI compatibility overload')
+write(rel, text)
+
+
 # BaseGuiWidgets can create multiple GitGuiPlugin objects inside one HopGui session. The repository
 # state therefore must be shared within that session, but never across Hop Web sessions.
 rel = 'plugins/misc/git/src/main/java/org/apache/hop/git/GitGuiPlugin.java'
