@@ -1,6 +1,6 @@
 status=running
-stage=tests-binary-guard-passed
-run_id=32631148918
-run_number=5
-commit=44d8c46286d2f2482386ff3b5c2095a05fb7c81d
-time=2026-08-23T09:33:06Z
+stage=checkout-baseline
+run_id=32631887943
+run_number=6
+commit=8d927521bbcce0c28734e30961944330fc8fc3ae
+time=2026-08-23T09:45:32Z
