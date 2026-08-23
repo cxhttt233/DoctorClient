@@ -20,6 +20,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Record build start
+        continue-on-error: true
         run: |
           printf 'status=running\nstage=checkout-baseline\nrun_id=%s\nrun_number=%s\ncommit=%s\ntime=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > build-progress-20260820.txt
           git config user.name github-actions
@@ -47,6 +48,7 @@ jobs:
         run: python3 verify_hotfix.py hop
 
       - name: Record source patch verified
+        continue-on-error: true
         run: |
           printf 'status=running\nstage=source-patch-verified\nrun_id=%s\nrun_number=%s\ncommit=%s\ntime=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > build-progress-20260820.txt
           git add build-progress-20260820.txt
@@ -65,6 +67,7 @@ jobs:
         run: ./mvnw -B -pl ui,plugins/misc/git -am -DskipTests install
 
       - name: Record compile passed
+        continue-on-error: true
         run: |
           printf 'status=running\nstage=compile-passed\nrun_id=%s\nrun_number=%s\ncommit=%s\ntime=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > build-progress-20260820.txt
           git add build-progress-20260820.txt
@@ -87,6 +90,7 @@ jobs:
           echo 'No post-baseline XmlSnapshotUndo reference: PASS'
 
       - name: Record tests and binary guard passed
+        continue-on-error: true
         run: |
           printf 'status=running\nstage=tests-binary-guard-passed\nrun_id=%s\nrun_number=%s\ncommit=%s\ntime=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > build-progress-20260820.txt
           git add build-progress-20260820.txt
@@ -106,6 +110,7 @@ jobs:
             -t hop-web-hotfix-20260820-smoke .
 
       - name: Record Docker build passed
+        continue-on-error: true
         run: |
           printf 'status=running\nstage=docker-build-passed\nrun_id=%s\nrun_number=%s\ncommit=%s\ntime=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > build-progress-20260820.txt
           git add build-progress-20260820.txt
@@ -168,6 +173,7 @@ jobs:
 
       - name: Publish build status marker
         if: always()
+        continue-on-error: true
         env:
           BUILD_STATUS: ${{ job.status }}
           RUN_ID: ${{ github.run_id }}
