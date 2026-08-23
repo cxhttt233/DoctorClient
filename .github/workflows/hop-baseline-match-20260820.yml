@@ -1,0 +1,83 @@
+name: Hop 20260820 real baseline matcher
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [hop-web-session-hotfix-20260820]
+    paths:
+      - '.github/workflows/hop-baseline-match-20260820.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  match-baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record matcher start
+        continue-on-error: true
+        run: |
+          printf 'status=running\nstage=build-unmodified-candidate\nrun_id=%s\nrun_number=%s\ncommit=%s\ntime=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > baseline-match-status-20260820.txt
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add baseline-match-status-20260820.txt
+          git commit -m "ci: baseline matcher ${GITHUB_RUN_NUMBER} started" || true
+          git push origin HEAD:hop-web-session-hotfix-20260820 || true
+
+      - name: Checkout last Apache Hop main commit before 20260820 image creation
+        run: |
+          git clone --filter=blob:none https://github.com/apache/hop.git hop
+          cd hop
+          git checkout 362140499c9afbff3e6ae3afede89a1796eaf972
+          test "$(git rev-parse HEAD)" = '362140499c9afbff3e6ae3afede89a1796eaf972'
+          grep -q 'HopSecurityContext' core/src/main/java/org/apache/hop/core/security/HopSecurityContext.java
+          grep -q 'setSecurityContext' ui/src/main/java/org/apache/hop/ui/hopgui/HopGui.java
+          test ! -f core/src/main/java/org/apache/hop/core/undo/XmlSnapshotUndo.java
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build unmodified candidate modules
+        working-directory: hop
+        run: ./mvnw -B -pl ui,plugins/misc/git -am -DskipTests install
+
+      - name: Collect candidate binaries and API fingerprints
+        run: |
+          set -Eeuo pipefail
+          mkdir -p baseline-candidate
+          cp hop/core/target/hop-core-2.20.0-SNAPSHOT.jar baseline-candidate/
+          cp hop/ui/target/hop-ui-2.20.0-SNAPSHOT.jar baseline-candidate/
+          cp hop/plugins/misc/git/target/hop-misc-git-2.20.0-SNAPSHOT.jar baseline-candidate/
+          sha256sum baseline-candidate/*.jar > baseline-candidate/SHA256SUMS.txt
+          javap -classpath 'baseline-candidate/hop-ui-2.20.0-SNAPSHOT.jar:baseline-candidate/hop-core-2.20.0-SNAPSHOT.jar' org.apache.hop.ui.hopgui.HopGui > baseline-candidate/HopGui.javap.txt
+          grep -F 'setSecurityContext(org.apache.hop.core.security.HopSecurityContext)' baseline-candidate/HopGui.javap.txt
+          jar tf baseline-candidate/hop-core-2.20.0-SNAPSHOT.jar | grep -q '^org/apache/hop/core/security/HopSecurityContext.class$'
+          ! jar tf baseline-candidate/hop-core-2.20.0-SNAPSHOT.jar | grep -q '^org/apache/hop/core/undo/XmlSnapshotUndo.class$'
+          printf 'candidate_commit=362140499c9afbff3e6ae3afede89a1796eaf972\nreal_core_sha=640357ca8e549b7ad5c96c70e6c543e90038738b1edcac1bcc571ae5407e0e87\nreal_ui_sha=d7b388746c442f96830d4b49a94f89b40bce13c5c8ff0f9a952562238bb84726\nreal_git_sha=e76ed8ee89d344435372c3cf1b3ba669874100f5ff17987074eb5ea22e477ba0\n' > baseline-candidate/REAL-BASELINE.txt
+
+      - name: Upload candidate binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: hop-baseline-candidate-362140
+          path: baseline-candidate/*
+          if-no-files-found: error
+
+      - name: Publish matcher result
+        if: always()
+        continue-on-error: true
+        env:
+          RESULT: ${{ job.status }}
+        run: |
+          printf 'status=%s\nstage=finished-%s\nrun_id=%s\nrun_number=%s\ncommit=%s\ntime=%s\n' "$RESULT" "$RESULT" "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > baseline-match-status-20260820.txt
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add baseline-match-status-20260820.txt
+          git commit -m "ci: baseline matcher ${GITHUB_RUN_NUMBER} ${RESULT}" || exit 0
+          git push origin HEAD:hop-web-session-hotfix-20260820 || true
