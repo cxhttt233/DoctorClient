@@ -1,6 +1,6 @@
-status=failure
-stage=finished-failure
-run_id=32628910109
-run_number=3
-commit=697bbb8332a8bcfdd263c61baf99f1185ace32be
-time=2026-08-23T08:43:20Z
+status=running
+stage=checkout-baseline
+run_id=32630930753
+run_number=4
+commit=948cd08a65c5cfa66233a45abe5db618c3ced93d
+time=2026-08-23T09:25:05Z
