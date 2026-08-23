@@ -1,0 +1,161 @@
+name: Hop Web hotfix exact 20260820 image
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [hop-web-session-hotfix-20260820]
+    paths:
+      - '.github/workflows/hop-hotfix-real-image-20260820.yml'
+      - 'apply_hotfix.py'
+      - 'apply_hotfix_pre.py'
+      - 'apply_hotfix_phase2.py'
+      - 'verify_hotfix.py'
+
+permissions:
+  contents: read
+
+jobs:
+  exact-image-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull exact published 20260820 image and extract original jars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          IMAGE='apache/hop-web:2.20.0-SNAPSHOT-20260820'
+          docker pull "$IMAGE"
+          docker image inspect "$IMAGE" > image-inspect.json
+          cid=$(docker create "$IMAGE")
+          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+          mkdir -p exact-image
+          ui_path=$(docker export "$cid" | tar -tf - | grep -E '/hop-ui-2\.20\.0-SNAPSHOT\.jar$' | head -1)
+          git_path=$(docker export "$cid" | tar -tf - | grep -E '/hop-misc-git-2\.20\.0-SNAPSHOT\.jar$' | head -1)
+          test -n "$ui_path" && test -n "$git_path"
+          docker cp "$cid:/${ui_path#./}" exact-image/hop-ui-2.20.0-SNAPSHOT.jar
+          docker cp "$cid:/${git_path#./}" exact-image/hop-misc-git-2.20.0-SNAPSHOT.jar
+          printf '/%s\n' "${ui_path#./}" > exact-image/ui-path.txt
+          printf '/%s\n' "${git_path#./}" > exact-image/git-path.txt
+          sha256sum exact-image/*.jar | tee exact-image/original-sha256.txt
+          test "$(sha256sum exact-image/hop-ui-2.20.0-SNAPSHOT.jar | awk '{print $1}')" = 'd7b388746c442f96830d4b49a94f89b40bce13c5c8ff0f9a952562238bb84726'
+          test "$(sha256sum exact-image/hop-misc-git-2.20.0-SNAPSHOT.jar | awk '{print $1}')" = 'e76ed8ee89d344435372c3cf1b3ba669874100f5ff17987074eb5ea22e477ba0'
+          unzip -p exact-image/hop-ui-2.20.0-SNAPSHOT.jar META-INF/MANIFEST.MF > exact-image/hop-ui-manifest.txt || true
+
+      - name: Verify exact image exposes security API that failed on server
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          javap -classpath exact-image/hop-ui-2.20.0-SNAPSHOT.jar org.apache.hop.ui.hopgui.HopGui > exact-image/HopGui.javap.txt
+          grep -F 'setSecurityContext(org.apache.hop.core.security.HopSecurityContext)' exact-image/HopGui.javap.txt
+          grep -F 'getSecurityContext()' exact-image/HopGui.javap.txt
+
+      - name: Checkout closest 20260820 Apache Hop source baseline
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git clone --filter=blob:none https://github.com/apache/hop.git hop
+          cd hop
+          git checkout 362140499c9afbff3e6ae3afede89a1796eaf972
+          git rev-parse HEAD
+          grep -q 'HopSecurityContext' ui/src/main/java/org/apache/hop/ui/hopgui/HopGui.java
+
+      - name: Apply session hotfix to real-date source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 apply_hotfix_pre.py hop
+          python3 apply_hotfix.py hop
+          python3 apply_hotfix_phase2.py hop
+          python3 verify_hotfix.py hop
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build and test patched UI and Git modules
+        working-directory: hop
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ./mvnw -B -pl ui,plugins/misc/git -am -DskipTests install
+          ./mvnw -B -pl ui,plugins/misc/git -DskipITs test
+
+      - name: Binary API guard against exact published image
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          NEW_UI='hop/ui/target/hop-ui-2.20.0-SNAPSHOT.jar'
+          NEW_GIT='hop/plugins/misc/git/target/hop-misc-git-2.20.0-SNAPSHOT.jar'
+          test -f "$NEW_UI" && test -f "$NEW_GIT"
+          javap -classpath "$NEW_UI" org.apache.hop.ui.hopgui.HopGui > exact-image/HopGui-hotfix.javap.txt
+          grep -F 'setSecurityContext(org.apache.hop.core.security.HopSecurityContext)' exact-image/HopGui-hotfix.javap.txt
+          grep -F 'getSecurityContext()' exact-image/HopGui-hotfix.javap.txt
+          # Catch the exact production failure class and common linkage regressions before runtime.
+          jar tf "$NEW_UI" | grep -q '^org/apache/hop/ui/hopgui/HopGui.class$'
+          jar tf "$NEW_GIT" | grep -q '^org/apache/hop/git/GitGuiPlugin.class$'
+          sha256sum "$NEW_UI" "$NEW_GIT" | tee exact-image/hotfix-sha256.txt
+
+      - name: Build replacement image FROM exact published 20260820 image
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          UI_PATH=$(cat exact-image/ui-path.txt)
+          GIT_PATH=$(cat exact-image/git-path.txt)
+          cp hop/ui/target/hop-ui-2.20.0-SNAPSHOT.jar exact-image/hop-ui-hotfix.jar
+          cp hop/plugins/misc/git/target/hop-misc-git-2.20.0-SNAPSHOT.jar exact-image/hop-misc-git-hotfix.jar
+          cat > exact-image/Dockerfile <<EOF
+          FROM apache/hop-web:2.20.0-SNAPSHOT-20260820
+          COPY hop-ui-hotfix.jar ${UI_PATH}
+          COPY hop-misc-git-hotfix.jar ${GIT_PATH}
+          EOF
+          docker build -t hop-web-hotfix-exact-20260820 exact-image
+
+      - name: Runtime startup and dual-session regression on exact published image
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          docker run -d --name hop-web-hotfix-exact-20260820 -p 18080:8080 hop-web-hotfix-exact-20260820
+          cleanup() {
+            docker logs hop-web-hotfix-exact-20260820 > exact-image/runtime.log 2>&1 || true
+            docker rm -f hop-web-hotfix-exact-20260820 >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          ready=0
+          for i in $(seq 1 120); do
+            code=$(curl -sS -o /tmp/ready.html -w '%{http_code}' --max-time 10 http://127.0.0.1:18080/ui || true)
+            if [ "$code" = '200' ] || [ "$code" = '302' ]; then ready=1; break; fi
+            if [ "$code" = '500' ]; then
+              docker logs hop-web-hotfix-exact-20260820 > exact-image/runtime.log 2>&1 || true
+              cat /tmp/ready.html || true
+              grep -nE 'NoSuchMethodError|NoClassDefFoundError|ClassNotFoundException|LinkageError' exact-image/runtime.log || true
+              exit 1
+            fi
+            sleep 2
+          done
+          test "$ready" -eq 1
+          rm -f /tmp/a.cookies /tmp/b.cookies
+          curl -fsSL --max-time 20 -c /tmp/a.cookies -b /tmp/a.cookies http://127.0.0.1:18080/ui -o /tmp/a.html
+          curl -fsSL --max-time 20 -c /tmp/b.cookies -b /tmp/b.cookies http://127.0.0.1:18080/ui -o /tmp/b.html
+          sid_a=$(awk '$6 == "JSESSIONID" {print $7}' /tmp/a.cookies | tail -1)
+          sid_b=$(awk '$6 == "JSESSIONID" {print $7}' /tmp/b.cookies | tail -1)
+          test -n "$sid_a" && test -n "$sid_b" && test "$sid_a" != "$sid_b"
+          for i in $(seq 1 12); do
+            curl -fsSL --max-time 20 -b /tmp/a.cookies http://127.0.0.1:18080/ui -o /tmp/a-$i.html &
+            curl -fsSL --max-time 20 -b /tmp/b.cookies http://127.0.0.1:18080/ui -o /tmp/b-$i.html &
+          done
+          wait
+          docker logs hop-web-hotfix-exact-20260820 > exact-image/runtime.log 2>&1
+          ! grep -Eiq 'NoSuchMethodError|NoClassDefFoundError|ClassNotFoundException|LinkageError|Invalid thread access|InvalidThreadAccess|UISession.{0,80}(invalid|disposed)|Widget is disposed|SWTException.{0,80}thread' exact-image/runtime.log
+
+      - name: Upload exact-image diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hop-web-hotfix-exact-20260820-diagnostics
+          path: exact-image/*
+          if-no-files-found: warn
