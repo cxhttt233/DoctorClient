@@ -1,0 +1,72 @@
+name: Hop Web hotfix 20260820 jars
+
+on:
+  push:
+    branches: [hop-web-session-hotfix-20260820]
+    paths:
+      - '.github/workflows/hop-hotfix-20260820-jars.yml'
+      - 'apply_hotfix.py'
+      - 'apply_hotfix_pre.py'
+      - 'apply_hotfix_phase2.py'
+      - 'verify_hotfix.py'
+  workflow_dispatch:
+
+jobs:
+  build-jars:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout Apache Hop 20260820 baseline
+        run: |
+          git clone --filter=blob:none https://github.com/apache/hop.git hop
+          cd hop
+          git checkout fe9619b0ae7cec95444cca0516bd8d6aada6cda0
+          grep -q '<version>2.20.0-SNAPSHOT</version>' pom.xml
+          test ! -f engine/src/main/java/org/apache/hop/core/undo/XmlSnapshotUndo.java
+
+      - name: Apply and verify hotfix
+        run: |
+          python3 apply_hotfix_pre.py hop
+          python3 apply_hotfix.py hop
+          python3 apply_hotfix_phase2.py hop
+          python3 verify_hotfix.py hop
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build and test target modules
+        working-directory: hop
+        run: |
+          ./mvnw -B -pl ui,plugins/misc/git -am -DskipTests install
+          ./mvnw -B -pl ui,plugins/misc/git -DskipITs test
+
+      - name: Binary baseline guard
+        working-directory: hop
+        run: |
+          test -f ui/target/hop-ui-2.20.0-SNAPSHOT.jar
+          test -f plugins/misc/git/target/hop-misc-git-2.20.0-SNAPSHOT.jar
+          if unzip -p ui/target/hop-ui-2.20.0-SNAPSHOT.jar | strings | grep -q 'XmlSnapshotUndo'; then
+            echo 'ERROR: hop-ui references post-baseline XmlSnapshotUndo API' >&2
+            exit 1
+          fi
+
+      - name: Collect jars
+        run: |
+          mkdir -p artifacts
+          cp hop/ui/target/hop-ui-2.20.0-SNAPSHOT.jar artifacts/
+          cp hop/plugins/misc/git/target/hop-misc-git-2.20.0-SNAPSHOT.jar artifacts/
+          sha256sum artifacts/*.jar > artifacts/SHA256SUMS.txt
+          printf 'baseline_commit=fe9619b0ae7cec95444cca0516bd8d6aada6cda0\nsource_branch=hop-web-session-hotfix-20260820\nsource_commit=%s\n' "$GITHUB_SHA" > artifacts/BASELINE.txt
+
+      - name: Upload jars
+        uses: actions/upload-artifact@v4
+        with:
+          name: hop-web-session-hotfix-20260820-jars
+          path: artifacts/*
+          if-no-files-found: error
