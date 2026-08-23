@@ -7,6 +7,8 @@ on:
       - build-progress-20260820.txt
       - build-status-20260820.txt
       - notified-20260820.txt
+      - candidate-status-20260820.txt
+      - .github/workflows/hop-hotfix-20260820-candidate.yml
   workflow_dispatch:
 
 permissions:
