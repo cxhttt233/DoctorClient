@@ -21,8 +21,9 @@ if anchor not in web:
 
 loading_method = r'''  /**
    * Static HTML shown immediately by the RAP web client while the first UI session is being built.
-   * This deliberately has no real percentage: HopGui.open() is synchronous and does not expose
-   * reliable progress events. The overlay is removed by HopWebEntryPoint after HopGui.open().
+   * This deliberately has no real percentage: HopGui startup does not expose reliable progress
+   * events. HopWebEntryPoint removes the overlay once the Hop GUI event loop is running and the
+   * initial queued startup work has had a chance to complete.
    */
   private static String getLoadingSplash(boolean dark) {
     String background = dark ? "#17191d" : "#f3f5f7";
@@ -84,7 +85,7 @@ if open_anchor not in entry_text:
     raise SystemExit("HopWebEntryPoint.java HopGui.open anchor not found")
 entry_text = entry_text.replace(
     open_anchor,
-    """    HopGui.getInstance().open();\n    hideLoadingSplash();\n\n    // URL params were only for initial project/file; clear so they don't affect CLI/run.\n""",
+    """    // HopGui.open() owns the SWT/RAP event loop and normally returns only when the UI closes.\n    // Queue splash removal before entering it. The first async callback runs once the event loop is\n    // alive; the short timer then lets HopGui's already-queued startup work run first. If that work\n    // keeps the UI thread busy, the timer naturally waits until the UI thread becomes responsive.\n    display.asyncExec(() -> display.timerExec(250, this::hideLoadingSplash));\n    HopGui.getInstance().open();\n\n    // URL params were only for initial project/file; clear so they don't affect CLI/run.\n""",
     1,
 )
 
@@ -92,11 +93,12 @@ method_anchor = """  /** Save the user's theme preference to the audit folder (p
 if method_anchor not in entry_text:
     raise SystemExit("HopWebEntryPoint.java method insertion anchor not found")
 
-hide_method = r'''  /** Remove the static BODY_HTML splash after the first Hop GUI has been constructed. */
+hide_method = r'''  /** Fade out and remove the static BODY_HTML splash on the UI thread. */
   private void hideLoadingSplash() {
     try {
       JavaScriptExecutor executor = RWT.getClient().getService(JavaScriptExecutor.class);
       if (executor == null) {
+        LogChannel.UI.logDebug("Could not hide Hop Web loading splash: JavaScriptExecutor unavailable");
         return;
       }
       executor.execute(
