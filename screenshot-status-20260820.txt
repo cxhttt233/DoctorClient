@@ -1,5 +1,5 @@
-status=running
+status=success
 run_id=32677424277
 run_number=3
 source_sha=653a416805c2aff3294c01b578c2f3a45b796ba5
-time=2026-08-24T00:40:58Z
+time=2026-08-24T01:01:56Z
