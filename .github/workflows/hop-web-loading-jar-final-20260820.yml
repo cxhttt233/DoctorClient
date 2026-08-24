@@ -1,0 +1,60 @@
+name: Hop Web loading RAP jar final 20260820
+
+on:
+  push:
+    branches: [hop-web-loading-20260820]
+    paths:
+      - '.github/workflows/hop-web-loading-jar-final-20260820.yml'
+  workflow_dispatch:
+
+jobs:
+  build-rap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout exact Aug 20 Hop baseline
+        run: |
+          git clone --filter=blob:none https://github.com/apache/hop.git hop
+          cd hop
+          git checkout 362140499c9afbff3e6ae3afede89a1796eaf972
+          test "$(git rev-parse HEAD)" = "362140499c9afbff3e6ae3afede89a1796eaf972"
+      - name: Apply final validated fix first, then RAP loading
+        run: |
+          python3 apply_hotfix_pre.py hop
+          python3 apply_hotfix.py hop
+          python3 apply_hotfix_phase2.py hop
+          python3 verify_hotfix.py hop
+          python3 apply_loading_splash.py hop
+          grep -q 'display.asyncExec(() -> display.timerExec(250, this::hideLoadingSplash));' hop/rap/src/main/java/org/apache/hop/ui/hopgui/HopWebEntryPoint.java
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Compile final combination
+        working-directory: hop
+        run: ./mvnw -B -pl ui,plugins/misc/git,rap -am -DskipTests install
+      - name: Verify final hotfix ABI remains
+        working-directory: hop
+        run: |
+          javap -classpath ui/target/hop-ui-2.20.0-SNAPSHOT.jar org.apache.hop.ui.hopgui.HopGui | grep -F 'public void setSecurityContext(org.apache.hop.core.security.HopSecurityContext);'
+          javap -classpath ui/target/hop-ui-2.20.0-SNAPSHOT.jar org.apache.hop.ui.hopgui.file.shared.DrillDownGuiPlugin | grep -F 'public static void cleanupOnRunStart(java.lang.String);'
+      - name: Package RAP only
+        run: |
+          mkdir -p rap-artifact
+          cp hop/rap/target/hop-ui-rap-2.20.0-SNAPSHOT.jar rap-artifact/
+          sha256sum rap-artifact/hop-ui-rap-2.20.0-SNAPSHOT.jar | tee rap-artifact/SHA256SUMS.txt
+          cat > rap-artifact/BASELINE.txt <<'EOF'
+          Source baseline: 362140499c9afbff3e6ae3afede89a1796eaf972
+          Build order: validated final Session/Git fix first, RAP Loading second.
+          Output replaces ONLY hop-ui-rap-2.20.0-SNAPSHOT.jar.
+          Required existing hop-ui SHA256: fbd7a631a790473d1804ba90566593c4942ba8d681f1902bdcc37c07b3a7b729
+          Required existing hop-misc-git SHA256: ec08417e2ccab58db04696ef0c1116437e4b2b92abd7476692e8dec60e8607c0
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hop-web-loading-rap-final-20260820
+          path: rap-artifact/*
+          if-no-files-found: error
