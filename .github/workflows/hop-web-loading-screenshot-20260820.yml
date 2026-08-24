@@ -80,7 +80,7 @@ jobs:
           docker logs hop-web-loading-screenshot-20260820 || true
           exit 1
 
-      - name: Capture real browser screenshots
+      - name: Capture real browser screenshots and disappearance time
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -103,16 +103,28 @@ jobs:
             await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
             const started = Date.now();
             await page.goto('http://127.0.0.1:18080/ui', { waitUntil: 'domcontentloaded', timeout: 30000 });
-            async function snap(name) {
-              const state = await page.evaluate(() => {
+
+            async function getState() {
+              return await page.evaluate(() => {
                 const e = document.getElementById('hop-loading-splash');
                 if (!e) return { exists:false };
                 const cs = getComputedStyle(e);
-                return { exists:true, display:cs.display, opacity:cs.opacity, text:e.innerText };
+                return {
+                  exists:true,
+                  display:cs.display,
+                  opacity:cs.opacity,
+                  visibility:cs.visibility,
+                  pointerEvents:cs.pointerEvents,
+                  text:e.innerText
+                };
               });
+            }
+            async function snap(name) {
+              const state = await getState();
               fs.appendFileSync('screenshot-artifacts/state.txt', `${Date.now()-started}ms ${name} ${JSON.stringify(state)}\n`);
               await page.screenshot({ path:`screenshot-artifacts/${name}.png`, fullPage:false });
             }
+
             await snap('actual-loading-0ms');
             await new Promise(r => setTimeout(r, 400));
             await snap('actual-loading-400ms');
@@ -120,10 +132,47 @@ jobs:
             await snap('actual-loading-1200ms');
             await new Promise(r => setTimeout(r, 3000));
             await snap('actual-loading-4200ms');
+
+            let lastVisibleMs = null;
+            let firstHiddenMs = null;
+            let firstHiddenState = null;
+            const samples = [];
+            while (Date.now() - started < 90000) {
+              const nowMs = Date.now() - started;
+              const state = await getState();
+              const hidden = !state.exists || state.display === 'none' || state.visibility === 'hidden' || state.opacity === '0';
+              samples.push({ ms: nowMs, hidden, state });
+              if (hidden) {
+                firstHiddenMs = nowMs;
+                firstHiddenState = state;
+                break;
+              }
+              lastVisibleMs = nowMs;
+              await new Promise(r => setTimeout(r, 100));
+            }
+
+            const result = {
+              navigationStartedEpochMs: started,
+              lastVisibleMs,
+              firstHiddenMs,
+              resolutionMs: 100,
+              disappeared: firstHiddenMs !== null,
+              firstHiddenState,
+              sampleCount: samples.length
+            };
+            fs.writeFileSync('screenshot-artifacts/disappearance-time.json', JSON.stringify(result, null, 2) + '\n');
+            fs.writeFileSync('screenshot-artifacts/disappearance-samples.json', JSON.stringify(samples, null, 2) + '\n');
+            if (firstHiddenMs !== null) {
+              await page.screenshot({ path:'screenshot-artifacts/actual-after-disappear.png', fullPage:false });
+            } else {
+              await page.screenshot({ path:'screenshot-artifacts/actual-still-visible-90s.png', fullPage:false });
+            }
+            console.log(JSON.stringify(result));
             await browser.close();
           })().catch(e => { console.error(e); process.exit(1); });
           NODE
           cat screenshot-artifacts/state.txt
+          cat screenshot-artifacts/disappearance-time.json
 
       - name: Save runtime logs
         if: always()
