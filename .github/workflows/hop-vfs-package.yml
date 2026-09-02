@@ -1,0 +1,69 @@
+name: Package validated Hop VFS hotfix
+
+on:
+  push:
+    branches: [hop-web-vfs-session-fix-20260902]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout exact 20260901 pre-cutoff Hop baseline
+        run: |
+          git clone --filter=blob:none https://github.com/apache/hop.git hop
+          cd hop
+          git checkout 41af57cf9d7ae13bf24df069cbea251013068a2a
+          test "$(git rev-parse HEAD)" = "41af57cf9d7ae13bf24df069cbea251013068a2a"
+          test "$(git log -1 --format=%H -- core/src/main/java/org/apache/hop/core/vfs/HopVfs.java)" = "0801a69fd34859c66dbbcab6f0a38fbde91410cd"
+          test "$(git log -1 --format=%H -- core/src/main/java/org/apache/hop/core/vfs/HopVfsNamespaces.java)" = "0801a69fd34859c66dbbcab6f0a38fbde91410cd"
+
+      - name: Reapply exact green candidate
+        run: |
+          python3 vfs-fix/apply_vfs_fix.py hop
+          grep -q 'if (variables != null && HopVfsNamespaces.isIsolateEverything())' hop/core/src/main/java/org/apache/hop/core/vfs/HopVfs.java
+          grep -q 'static synchronized boolean isIsolateEverything()' hop/core/src/main/java/org/apache/hop/core/vfs/HopVfsNamespaces.java
+          git -C hop diff --name-only | sort | tee package-changed-files.txt
+          test "$(git -C hop diff --name-only | grep -v '^core/src/main/java/org/apache/hop/core/vfs/HopVfs.java$' | grep -v '^core/src/main/java/org/apache/hop/core/vfs/HopVfsNamespaces.java$' | grep -v '^core/src/test/java/org/apache/hop/core/vfs/HopVfsMultiTenantBootstrapTest.java$' | wc -l)" -eq 0
+
+      - name: Assemble install-time compilation package
+        run: |
+          set -Eeuo pipefail
+          rm -rf dist
+          mkdir -p dist/hop-web-vfs-session-hotfix-20260902
+          base64 -d vfs-fix/final-installer-template.tar.gz.b64 | tar -xz -C dist/hop-web-vfs-session-hotfix-20260902
+          mkdir -p dist/hop-web-vfs-session-hotfix-20260902/src/org/apache/hop/core/vfs
+          cp hop/core/src/main/java/org/apache/hop/core/vfs/HopVfs.java dist/hop-web-vfs-session-hotfix-20260902/src/org/apache/hop/core/vfs/
+          cp hop/core/src/main/java/org/apache/hop/core/vfs/HopVfsNamespaces.java dist/hop-web-vfs-session-hotfix-20260902/src/org/apache/hop/core/vfs/
+          cp candidate.diff dist/hop-web-vfs-session-hotfix-20260902/ 2>/dev/null || git -C hop diff -- core/src/main/java/org/apache/hop/core/vfs/HopVfs.java core/src/main/java/org/apache/hop/core/vfs/HopVfsNamespaces.java > dist/hop-web-vfs-session-hotfix-20260902/candidate.diff
+          cat > dist/hop-web-vfs-session-hotfix-20260902/VALIDATION.txt <<'EOF'
+          Target: apache/hop-web:2.20.0-SNAPSHOT-20260901 / image ID prefix b6c25e19d9a9
+          Hop source baseline: 41af57cf9d7ae13bf24df069cbea251013068a2a
+          VFS source lineage: #8119 commit 0801a69fd34859c66dbbcab6f0a38fbde91410cd
+          Production patch: HopVfs.java + HopVfsNamespaces.java only
+          Green validation run: https://github.com/cxhttt233/DoctorClient/actions/runs/33541746754
+          Green run covered: lineage/state-machine proof; 22 focused VFS tests; affected-module build; production call-site inspection; patched Hop Web Docker build; two distinct JSESSIONIDs with alternating A/B requests; forbidden VFS/session/linkage error scan.
+          Remaining scope note: the green runtime smoke was HTTP/RAP-session level, not a complete Selenium Table Input/Execute SQL/config-save business-flow suite. The installer therefore performs mandatory javap, actual-container compilation, reset-bytecode comparison, standalone VFS state-machine probe, restart/readiness/log scan, and auto rollback.
+          EOF
+          find dist/hop-web-vfs-session-hotfix-20260902 -type f -name '*.sh' -exec bash -n {} \;
+          grep -q 'HopVfsNamespaces.isIsolateEverything()' dist/hop-web-vfs-session-hotfix-20260902/src/org/apache/hop/core/vfs/HopVfs.java
+          grep -q 'NAMESPACES.values().forEach(HopVfsNamespace::close);' dist/hop-web-vfs-session-hotfix-20260902/src/org/apache/hop/core/vfs/HopVfsNamespaces.java
+          chmod +x dist/hop-web-vfs-session-hotfix-20260902/*.sh
+          (cd dist && zip -qr hop-web-vfs-session-hotfix-20260902.zip hop-web-vfs-session-hotfix-20260902)
+          sha256sum dist/hop-web-vfs-session-hotfix-20260902.zip | tee dist/hop-web-vfs-session-hotfix-20260902.zip.sha256
+          unzip -l dist/hop-web-vfs-session-hotfix-20260902.zip
+
+      - name: Upload final hotfix ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: hop-web-vfs-session-hotfix-20260902
+          path: |
+            dist/hop-web-vfs-session-hotfix-20260902.zip
+            dist/hop-web-vfs-session-hotfix-20260902.zip.sha256
+          if-no-files-found: error
